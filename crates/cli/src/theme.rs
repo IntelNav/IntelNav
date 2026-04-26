@@ -9,6 +9,11 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+/// Schema-complete palette. Several slots aren't read by today's
+/// renderer (`inverse`, `intel_lit`, `error`, `suggestion`) but
+/// they're part of the theme contract — hand-tuned alongside the
+/// rest. Keeps the dark/light variants symmetric.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     // prose
@@ -89,13 +94,19 @@ pub fn theme() -> Theme { Theme::dark() }
 // Convenience builders — callers don't need to remember modifier combos.
 // ---------------------------------------------------------------------
 
-pub fn text()     -> Style { Style::default().fg(theme().text) }
+// `text`, `inactive`, `selected` mirror the role/body builders below
+// so callers can reach a palette slot without remembering which
+// modifier combo goes with it. Currently only `subtle` and
+// `accent_bold` are wired into the live render; the rest are kept
+// as the API surface for future widgets.
+#[allow(dead_code)] pub fn text()     -> Style { Style::default().fg(theme().text) }
 pub fn subtle()   -> Style { Style::default().fg(theme().subtle) }
-pub fn inactive() -> Style { Style::default().fg(theme().inactive).add_modifier(Modifier::DIM) }
+#[allow(dead_code)] pub fn inactive() -> Style { Style::default().fg(theme().inactive).add_modifier(Modifier::DIM) }
 
 pub fn accent_bold() -> Style {
     Style::default().fg(theme().intel).add_modifier(Modifier::BOLD)
 }
+#[allow(dead_code)]
 pub fn selected() -> Style {
     Style::default().fg(theme().intel).add_modifier(Modifier::BOLD)
 }

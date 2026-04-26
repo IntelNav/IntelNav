@@ -20,6 +20,11 @@ use crate::theme;
 //  Rows
 // ======================================================================
 
+/// Schema-complete enum: the renderer only consumes a subset today,
+/// but the full per-variant metadata is captured at construction so
+/// new render passes (e.g. fit-aware coloring) don't need a parallel
+/// data path.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RowKind {
     Local   { path: std::path::PathBuf },

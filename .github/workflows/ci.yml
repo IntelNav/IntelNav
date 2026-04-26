@@ -14,9 +14,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Not setting RUSTFLAGS=-D warnings yet — workspace has known dead-code
-  # warnings (unused helpers in theme.rs, tui.rs) that predate CI. Enable
-  # once those are either annotated or removed.
+  # The runtime+ggml+cli refactors (n_ctx bounds, candle removal,
+  # tui split) leave the workspace warning-free under `cargo build
+  # --workspace --all-targets`. Treat new warnings as errors
+  # everywhere — that's how we keep this clean.
+  RUSTFLAGS: -D warnings
 
 jobs:
   # ---------------------------------------------------------------------
@@ -49,23 +51,23 @@ jobs:
           key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-check-
 
-      # NOTE: `--lib --bins --tests`, NOT `--all-targets`. Two
-      # pre-existing runtime examples (`smoke_load`, `probe`) still
-      # reference candle::Tensor APIs from before the Hidden refactor
-      # and fail to compile. Fixing them is out of scope for CI
-      # bring-up; when they get ported, switch this back to --all-targets.
-      - name: cargo check --workspace --lib --bins --tests
-        run: cargo check --workspace --lib --bins --tests
+      # smoke_load and probe were ported off candle::Tensor to the
+      # Hidden API in the runtime refactor, so --all-targets covers
+      # every example without per-example fallback checks.
+      - name: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets
 
-      # Examples that matter for Path B (pipe_peer, pipe_driver,
-      # bench_chain, bench_ggml) compile in isolation — check them
-      # explicitly so regressions there still trip CI.
-      - name: cargo check (Path B examples)
-        run: |
-          cargo check --example pipe_peer -p intelnav-runtime
-          cargo check --example pipe_driver -p intelnav-runtime
-          cargo check --example bench_chain -p intelnav-runtime
-          cargo check --example bench_ggml -p intelnav-runtime
+      # Clippy + rustfmt are declared in rust-toolchain.toml so
+      # rustup-managed runners have them available. `continue-on-error`
+      # so first runs surface findings without breaking pre-existing
+      # PRs; flip to fail-hard once the workspace is reviewed clean.
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+      - name: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: true
 
   # ---------------------------------------------------------------------
   # Cross-OS pure-Rust tests. The chunker, stitcher, manifest, fetcher,

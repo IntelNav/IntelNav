@@ -24,7 +24,10 @@ pub enum Event {
 }
 
 /// Kick off a download in the background. Returns the receiver half
-/// of the event stream.
+/// of the event stream. Kept for arbitrary-URL flows (operator
+/// pasting a custom GGUF link); the curated-catalog path uses
+/// [`download_catalog`] instead.
+#[allow(dead_code)]
 pub fn spawn(url: String, dest: PathBuf, label: String) -> mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
     let label2 = label.clone();

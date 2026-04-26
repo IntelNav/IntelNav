@@ -41,7 +41,10 @@ pub fn char_color(idx: usize, len: usize, phase: f32) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Solid base orange — for non-shimmering brand text.
+/// Solid base orange — for non-shimmering brand text. Currently
+/// only the gradient form is rendered; this is the static-color
+/// counterpart kept so callers don't need to import the constant.
+#[allow(dead_code)]
 pub fn base() -> Color {
     Color::Rgb(STOP_B.0, STOP_B.1, STOP_B.2)
 }

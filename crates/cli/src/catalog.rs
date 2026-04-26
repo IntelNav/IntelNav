@@ -19,7 +19,11 @@ pub enum Fit {
     TooBig,
 }
 
-/// One downloadable model.
+/// One downloadable model. Schema-complete: several fields aren't
+/// read by today's renderer but are part of the catalog contract
+/// (used by future `--filter` / `intelnav doctor --suggest` paths
+/// and the operator-facing manifest output).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CatalogEntry {
     /// Slug we surface to users and use as filename stem.
@@ -59,6 +63,10 @@ pub fn catalog() -> &'static [CatalogEntry] {
     &CATALOG
 }
 
+/// Resolve a slug to its catalog entry. Used by the future
+/// `intelnav models install <id>` flow; kept now so the catalog
+/// has one canonical lookup entry point.
+#[allow(dead_code)]
 pub fn find(id: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.id.eq_ignore_ascii_case(id))
 }
