@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::BytesMut;
-use candle_transformers::generation::LogitsProcessor;
 use intelnav_core::types::{LayerRange, Quant};
 use intelnav_core::{PeerId, SessionId};
 use intelnav_ggml::{decode_hidden, encode_hidden_with, Hidden, HiddenPayload};
@@ -27,6 +26,7 @@ use tokio::time::timeout;
 
 use crate::generate::SamplingCfg;
 use crate::model::ModelHandle;
+use crate::sample::{Sampler, SamplerCfg};
 use crate::tokenizer::Tok;
 
 /// Per-peer link state. One TCP connection, one session, one inbound
@@ -448,8 +448,9 @@ pub fn head_all_forward(model: &mut ModelHandle, tail_hidden: &Hidden) -> Result
 /// the head locally, and funnels the middle through `chain`. Calls
 /// `on_token(text)` for each decoded text chunk.
 ///
-/// Blocks on candle forward passes in-between `await` points — callers
-/// should spawn it on a current-thread runtime dedicated to this turn.
+/// Blocks on synchronous ggml forward passes in-between `await` points
+/// — callers should spawn it on a current-thread runtime dedicated to
+/// this turn.
 pub async fn run_turn<F: FnMut(&str) -> Result<()>>(
     model:   &mut ModelHandle,
     tok:     &Tok,
@@ -466,7 +467,8 @@ pub async fn run_turn<F: FnMut(&str) -> Result<()>>(
         return Err(anyhow!("prompt tokenized to zero tokens"));
     }
 
-    let mut lp = LogitsProcessor::new(cfg.seed, Some(cfg.temperature), cfg.top_p);
+    let mut sampler = Sampler::new(cfg.seed, cfg.temperature, cfg.top_p);
+    let scfg = SamplerCfg { repeat_penalty: cfg.repeat_penalty, repeat_ctx: cfg.repeat_ctx };
     let mut decoder = tok.incremental();
     let mut index_pos: usize = 0;
 
@@ -475,7 +477,7 @@ pub async fn run_turn<F: FnMut(&str) -> Result<()>>(
     let tail = chain.step(front, Phase::Prefill).await.map_err(|e| anyhow!("{e}"))?;
     let logits = head_forward(model, &tail)?;
     index_pos += tokens.len();
-    let mut next = sample_next(&logits.data, &mut lp, &tokens, cfg)?;
+    let mut next = sampler.sample(&logits.data, &tokens, &scfg)?;
 
     let mut n_gen = 0usize;
     loop {
@@ -491,30 +493,10 @@ pub async fn run_turn<F: FnMut(&str) -> Result<()>>(
         let tail = chain.step(front, Phase::Decode).await.map_err(|e| anyhow!("{e}"))?;
         let logits = head_forward(model, &tail)?;
         index_pos += 1;
-        next = sample_next(&logits.data, &mut lp, &tokens, cfg)?;
+        next = sampler.sample(&logits.data, &tokens, &scfg)?;
     }
 
     Ok(n_gen)
-}
-
-/// Sample the next token from a `[vocab]`-shaped logit slice. Keeps
-/// candle confined to this one function — the hot-path Pipelined
-/// calls stay Tensor-free.
-fn sample_next(
-    logits: &[f32],
-    lp:     &mut LogitsProcessor,
-    ctx:    &[u32],
-    cfg:    &SamplingCfg,
-) -> Result<u32> {
-    use candle_core::{Device, Tensor};
-    let t = Tensor::from_slice(logits, &[logits.len()], &Device::Cpu)?;
-    let t = if cfg.repeat_penalty > 1.0 {
-        let start = ctx.len().saturating_sub(cfg.repeat_ctx);
-        candle_transformers::utils::apply_repeat_penalty(&t, cfg.repeat_penalty, &ctx[start..])?
-    } else {
-        t
-    };
-    Ok(lp.sample(&t)?)
 }
 
 #[cfg(test)]

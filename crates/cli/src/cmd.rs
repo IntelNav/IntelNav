@@ -273,8 +273,8 @@ pub async fn doctor(cfg: &Config) -> Result<()> {
     // Local runtime probe.
     let probe = Probe::collect();
     ok_or_warn("runtime", probe.summary.clone(), true);
-    println!("      compiled: {}", probe.backends.compiled.join(", "));
-    println!("      runtime : {}", probe.backends.runtime.join(", "));
+    println!("      available: {}", probe.backends.available.join(", "));
+    println!("      preferred: {}", probe.backends.recommended);
 
     // GGML-path probe: which libllama-<backend>.so would load, which
     // runtime libs are missing, what GPU hardware is installed.

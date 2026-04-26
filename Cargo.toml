@@ -68,9 +68,6 @@ if-addrs     = "0.13"
 async-stream = "0.3"
 
 # inference runtime
-candle-core         = { version = "0.9" }
-candle-nn           = { version = "0.9" }
-candle-transformers = { version = "0.9" }
 tokenizers          = { version = "0.21", default-features = false, features = ["onig"] }
 sysinfo             = "0.38"
 half                = "2"

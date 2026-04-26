@@ -150,13 +150,13 @@ enum View {
 /// the view doesn't flicker as the probe re-runs.
 #[derive(Clone, Debug)]
 struct DoctorView {
-    runtime:  String,
-    compiled: Vec<String>,
-    active:   Vec<String>,
-    gateway:  String,
+    runtime:    String,
+    available:  Vec<String>,
+    preferred:  String,
+    gateway:    String,
     models_dir: String,
-    model:    String,
-    mode:     String,
+    model:      String,
+    mode:       String,
 }
 
 #[derive(Clone, Debug)]
@@ -564,13 +564,13 @@ impl AppState {
             "doctor" => {
                 let p = Probe::collect();
                 self.view = View::Doctor(DoctorView {
-                    runtime:  p.summary,
-                    compiled: p.backends.compiled.iter().map(|s| s.to_string()).collect(),
-                    active:   p.backends.runtime.iter().map(|s| s.to_string()).collect(),
-                    gateway:  self.gateway.clone(),
+                    runtime:    p.summary,
+                    available:  p.backends.available.iter().map(|s| s.to_string()).collect(),
+                    preferred:  p.backends.recommended.to_string(),
+                    gateway:    self.gateway.clone(),
                     models_dir: self.models_dir.display().to_string(),
-                    model:    self.model.clone(),
-                    mode:     self.backend_label(),
+                    model:      self.model.clone(),
+                    mode:       self.backend_label(),
                 });
             }
 
@@ -1128,12 +1128,12 @@ fn render_doctor(f: &mut ratatui::Frame<'_>, area: Rect, d: &DoctorView) {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![label("runtime"),  ok(d.runtime.clone())]));
     lines.push(Line::from(vec![
-        label("compiled"),
-        value(if d.compiled.is_empty() { "(none)".into() } else { d.compiled.join(", ") }),
+        label("available"),
+        value(if d.available.is_empty() { "(none)".into() } else { d.available.join(", ") }),
     ]));
     lines.push(Line::from(vec![
-        label("active"),
-        value(if d.active.is_empty() { "(none)".into() } else { d.active.join(", ") }),
+        label("preferred"),
+        value(d.preferred.clone()),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![label("mode"),       value(d.mode.clone())]));

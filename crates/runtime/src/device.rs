@@ -1,17 +1,22 @@
-//! Device selection with runtime fallback.
+//! Operator-facing device hint.
 //!
-//! Build matrix:
+//! Hardware selection in IntelNav flows through the linked
+//! `libllama-<backend>.so` plus `INTELNAV_NGL` (`n_gpu_layers`); ggml
+//! itself decides which kernels to dispatch on. So all this module
+//! exposes is a small enum the operator can pass on the command line
+//! (`--device cpu | auto | cuda | metal`) and a translation to the
+//! `n_gpu_layers` value the runtime hands ggml.
 //!
-//! * default features → CPU only, builds everywhere.
-//! * `--features cuda` → enables candle's CUDA kernels. The binary
-//!   will still fall back to CPU if no CUDA runtime is present.
-//! * `--features metal` → same but for Apple GPUs.
+//! `DevicePref::Cpu` forces `n_gpu_layers = 0`; everything else means
+//! "offload as many layers as ggml can fit" (`n_gpu_layers = -1`),
+//! relying on the libllama build that was actually loaded to do the
+//! right thing. The ordinal on `Cuda(N)` / `Metal(N)` is currently
+//! advisory — multi-GPU support is a later milestone.
 //!
-//! The picker honours [`DevicePref`] so the operator can force a
-//! backend, with "auto" as the sensible default.
+//! `INTELNAV_NGL` env var, if set, wins over `DevicePref` so an
+//! operator can always pin the value out-of-band.
 
 use anyhow::Result;
-use candle_core::Device;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DevicePref {
@@ -20,6 +25,28 @@ pub enum DevicePref {
     Cpu,
     Cuda(usize),
     Metal(usize),
+}
+
+impl DevicePref {
+    /// Translate the hint into ggml's `n_gpu_layers`. `0` keeps every
+    /// layer on CPU; `-1` lets ggml offload everything it can to
+    /// whatever backend libllama was compiled with.
+    pub fn n_gpu_layers(self) -> i32 {
+        match self {
+            DevicePref::Cpu => 0,
+            DevicePref::Auto | DevicePref::Cuda(_) | DevicePref::Metal(_) => -1,
+        }
+    }
+
+    /// Short label for logs / probe output.
+    pub fn label(self) -> &'static str {
+        match self {
+            DevicePref::Auto    => "auto",
+            DevicePref::Cpu     => "cpu",
+            DevicePref::Cuda(_) => "cuda",
+            DevicePref::Metal(_) => "metal",
+        }
+    }
 }
 
 impl std::str::FromStr for DevicePref {
@@ -40,49 +67,25 @@ impl std::str::FromStr for DevicePref {
     }
 }
 
-pub fn pick_device() -> Result<Device> {
-    pick_device_with(DevicePref::Auto)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn pick_device_with(pref: DevicePref) -> Result<Device> {
-    match pref {
-        DevicePref::Cpu => {
-            tracing::info!("runtime: using CPU (forced)");
-            Ok(Device::Cpu)
-        }
-        DevicePref::Cuda(i) => {
-            let d = Device::new_cuda(i)
-                .map_err(|e| anyhow::anyhow!("CUDA requested but unavailable: {e}"))?;
-            tracing::info!("runtime: using CUDA device {i} (forced)");
-            Ok(d)
-        }
-        DevicePref::Metal(i) => {
-            let d = Device::new_metal(i)
-                .map_err(|e| anyhow::anyhow!("Metal requested but unavailable: {e}"))?;
-            tracing::info!("runtime: using Metal device {i} (forced)");
-            Ok(d)
-        }
-        DevicePref::Auto => {
-            #[cfg(feature = "cuda")]
-            {
-                if candle_core::utils::cuda_is_available() {
-                    if let Ok(d) = Device::new_cuda(0) {
-                        tracing::info!("runtime: using CUDA device 0");
-                        return Ok(d);
-                    }
-                }
-            }
-            #[cfg(feature = "metal")]
-            {
-                if candle_core::utils::metal_is_available() {
-                    if let Ok(d) = Device::new_metal(0) {
-                        tracing::info!("runtime: using Metal device 0");
-                        return Ok(d);
-                    }
-                }
-            }
-            tracing::info!("runtime: using CPU (no GPU backend available)");
-            Ok(Device::Cpu)
-        }
+    #[test]
+    fn parses_common_forms() {
+        assert_eq!("auto".parse::<DevicePref>().unwrap(), DevicePref::Auto);
+        assert_eq!("CPU".parse::<DevicePref>().unwrap(), DevicePref::Cpu);
+        assert_eq!("cuda".parse::<DevicePref>().unwrap(), DevicePref::Cuda(0));
+        assert_eq!("cuda:1".parse::<DevicePref>().unwrap(), DevicePref::Cuda(1));
+        assert_eq!("metal=2".parse::<DevicePref>().unwrap(), DevicePref::Metal(2));
+        assert!("nope".parse::<DevicePref>().is_err());
+    }
+
+    #[test]
+    fn cpu_forces_no_offload() {
+        assert_eq!(DevicePref::Cpu.n_gpu_layers(), 0);
+        assert_eq!(DevicePref::Auto.n_gpu_layers(), -1);
+        assert_eq!(DevicePref::Cuda(0).n_gpu_layers(), -1);
+        assert_eq!(DevicePref::Metal(1).n_gpu_layers(), -1);
     }
 }

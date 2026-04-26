@@ -43,5 +43,9 @@ libc = "0.2"
 
 [features]
 default = []
-cuda    = ["intelnav-runtime/cuda"]
-metal   = ["intelnav-runtime/metal"]
+# CUDA / Metal selection now happens at libllama-load time (which
+# `libllama-<backend>.so` is dlopen'd, plus `INTELNAV_NGL`). Keeping
+# empty no-op features so existing CI invocations like
+# `cargo build -p intelnav-cli --features cuda` don't break.
+cuda    = []
+metal   = []

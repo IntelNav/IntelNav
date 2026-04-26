@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 
 use intelnav_runtime::{
-    build_chat_prompt, generate, pick_device_with, sniff_arch, ChatTurn, DevicePref,
+    build_chat_prompt, generate, sniff_arch, ChatTurn, DevicePref,
     ModelHandle, ModelKind, SamplingCfg, Tok,
 };
 
@@ -133,8 +133,7 @@ impl LocalDriver {
         }
         let tok_path = model.tokenizer.clone()
             .ok_or_else(|| anyhow!("no tokenizer.json next to {}", model.path.display()))?;
-        let device = pick_device_with(self.device_pref)?;
-        let handle = ModelHandle::load(&model.path, &device)
+        let handle = ModelHandle::load(&model.path, self.device_pref)
             .with_context(|| format!("loading {}", model.path.display()))?;
         let tok = Tok::load(&tok_path)
             .with_context(|| format!("loading tokenizer {}", tok_path.display()))?;
@@ -177,11 +176,10 @@ impl LocalDriver {
         // Take the loaded model for the duration of the call. The
         // mutex is held for the whole generation — concurrent turns
         // would be incorrect anyway (shared KV cache).
-        let device = pick_device_with(self.device_pref)?;
         let mut slot = self.inner.lock().unwrap();
         let loaded = slot.as_mut().ok_or_else(|| anyhow!("model unloaded mid-flight"))?;
         let fw = loaded.handle.forwarding();
-        generate(fw, &loaded.tok, &device, &prompt, cfg, |chunk| {
+        generate(fw, &loaded.tok, &prompt, cfg, |chunk| {
             let _ = tx.send(Delta::Token(chunk.to_string()));
             Ok(())
         })?;

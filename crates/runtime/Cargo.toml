@@ -1,6 +1,6 @@
 [package]
 name        = "intelnav-runtime"
-description = "Layer-range inference runtime (candle-backed)."
+description = "Layer-range inference runtime over the IntelNav-patched libllama (ggml)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -12,10 +12,7 @@ intelnav-wire = { workspace = true }
 intelnav-ggml = { path = "../ggml" }
 intelnav-model-store = { workspace = true }
 
-candle-core         = { workspace = true }
-candle-nn           = { workspace = true }
-candle-transformers = { workspace = true }
-tokenizers          = { workspace = true }
+tokenizers = { workspace = true }
 
 anyhow    = { workspace = true }
 thiserror = { workspace = true }
@@ -25,11 +22,7 @@ sysinfo   = { workspace = true }
 half      = { workspace = true }
 tokio     = { workspace = true }
 bytes     = { workspace = true }
-
-[features]
-default = []
-cuda    = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-metal   = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+rand      = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

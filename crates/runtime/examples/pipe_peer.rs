@@ -37,7 +37,7 @@ use tokio::net::{TcpListener, TcpStream};
 use intelnav_core::{PeerId, SessionId};
 use intelnav_core::types::Quant;
 use intelnav_ggml::{decode_hidden, encode_hidden_with, Hidden, HiddenPayload};
-use intelnav_runtime::{pick_device_with, DevicePref, ModelHandle};
+use intelnav_runtime::{DevicePref, ModelHandle};
 use intelnav_wire::{self as wire, Msg};
 
 #[derive(Parser, Debug)]
@@ -104,7 +104,6 @@ async fn main() -> Result<()> {
     if args.start >= args.end {
         return Err(anyhow!("invalid layer range [{}..{})", args.start, args.end));
     }
-    let device = pick_device_with(args.device)?;
     let t0 = Instant::now();
 
     // Resolve the GGUF path — either the caller pointed us at a full
@@ -134,7 +133,7 @@ async fn main() -> Result<()> {
         (None, None) => return Err(anyhow!("must pass either --gguf or --manifest")),
     };
 
-    let mut model = ModelHandle::load(&gguf_path, &device)?;
+    let mut model = ModelHandle::load(&gguf_path, args.device)?;
     let total_blocks = model.block_count();
     // In stitched mode, `total_blocks` already equals `end-start`
     // (the stitched GGUF lied about `block_count` so libllama
@@ -177,7 +176,7 @@ async fn main() -> Result<()> {
         let (sock, peer) = listener.accept().await?;
         eprintln!("pipe_peer: accepted {peer}");
         if let Err(e) = handle(
-            sock, &mut model, &device,
+            sock, &mut model,
             args.start as usize, args.end as usize, local_offset,
         ).await {
             eprintln!("pipe_peer: session ended with error: {e:#}");
@@ -270,7 +269,6 @@ fn stitch_from_manifest(
 async fn handle(
     mut sock: TcpStream,
     model: &mut ModelHandle,
-    device: &candle_core::Device,
     real_start: usize,
     real_end: usize,
     // Subtract from real layer indices before calling libllama.

@@ -4,9 +4,16 @@
 //! to answer "what backend do I have, and how big a model slice can
 //! this machine carry." Intentionally side-effect-free — loading a
 //! model is the caller's job.
+//!
+//! Backend availability is delegated to [`intelnav_ggml::probe`] which
+//! checks driver-library presence (`libcuda.so.1`, `libhsa-runtime64.so`,
+//! `libvulkan.so.1`, …) without dlopen'ing them, and runs `nvidia-smi`
+//! / `rocminfo` when present. CPU-side data (cores, RAM) comes from
+//! `sysinfo`.
 
 use std::fmt;
 
+use intelnav_ggml::probe::GgmlProbe;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -20,12 +27,13 @@ pub struct Probe {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Backends {
-    /// Compile-time features enabled in this build.
-    pub compiled:       Vec<&'static str>,
-    /// Backends reported as usable by candle at runtime.
-    pub runtime:        Vec<&'static str>,
-    /// The backend `pick_device(Auto)` would select right now.
-    pub auto_choice:    &'static str,
+    /// Backends ggml's probe says have their driver libraries
+    /// installed on this host. Order is highest-preference first
+    /// (CUDA → ROCm → Metal → Vulkan → CPU); always ends in `cpu`.
+    pub available: Vec<&'static str>,
+    /// The backend a libllama loader would try first given what's
+    /// installed. Same as `available[0]` unless empty (then `cpu`).
+    pub recommended: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,48 +64,37 @@ impl Probe {
             available_bytes: sys.available_memory(),
         };
 
-        let mut compiled = Vec::new();
-        #[cfg(feature = "cuda")]  compiled.push("cuda");
-        #[cfg(feature = "metal")] compiled.push("metal");
-        if compiled.is_empty() { compiled.push("cpu"); }
-
-        let mut runtime: Vec<&'static str> = Vec::new();
-        #[cfg(feature = "cuda")]
-        if candle_core::utils::cuda_is_available() { runtime.push("cuda"); }
-        #[cfg(feature = "metal")]
-        if candle_core::utils::metal_is_available() { runtime.push("metal"); }
-        runtime.push("cpu");
-
-        let auto_choice = runtime.first().copied().unwrap_or("cpu");
+        let gg = GgmlProbe::collect();
+        let backends = Backends {
+            available:   gg.preferred.clone(),
+            recommended: gg.recommended(),
+        };
 
         let summary = format!(
-            "{auto_choice} · {} cores · {} RAM ({} free)",
+            "{} · {} cores · {} RAM ({} free)",
+            backends.recommended,
             cpu.logical_cores,
             human(memory.total_bytes),
             human(memory.available_bytes),
         );
 
-        Self { backends: Backends { compiled, runtime, auto_choice }, cpu, memory, summary }
+        Self { backends, cpu, memory, summary }
     }
 
-    /// Rough estimate of the largest model this machine can hold,
-    /// given a target dtype. For a GPU host we'd ideally check VRAM,
-    /// but candle doesn't expose VRAM uniformly across backends —
-    /// fall back to "assume 80% of system RAM / VRAM available for
-    /// weights" as a conservative ceiling.
+    /// Rough estimate of the largest model this machine can hold.
+    /// We fall back to "80% of available RAM" because VRAM isn't
+    /// exposed uniformly across backends — a conservative ceiling
+    /// for a quantized GGUF load. Actual runtime KV cache +
+    /// activations need headroom on top.
     pub fn max_model_bytes(&self) -> u64 {
-        // 80% of *available* RAM is a safe ceiling for a quantized
-        // GGUF load. Actual runtime KV cache + activations need
-        // headroom on top.
         self.memory.available_bytes.saturating_mul(4) / 5
     }
 }
 
 impl fmt::Display for Probe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "backend:   {}", self.backends.auto_choice)?;
-        writeln!(f, "  compiled: {}", self.backends.compiled.join(", "))?;
-        writeln!(f, "  runtime:  {}", self.backends.runtime.join(", "))?;
+        writeln!(f, "backend:   {}", self.backends.recommended)?;
+        writeln!(f, "  available: {}", self.backends.available.join(", "))?;
         writeln!(f, "cpu:       {} × {}", self.cpu.logical_cores, self.cpu.brand)?;
         writeln!(f, "memory:    {} total / {} available",
                  human(self.memory.total_bytes),

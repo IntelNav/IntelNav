@@ -23,7 +23,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 
 use intelnav_runtime::{
-    pick_device_with, qwen_chat_prompt, run_turn, run_turn_spec, Chain, ChainCfg, DevicePref,
+    qwen_chat_prompt, run_turn, run_turn_spec, Chain, ChainCfg, DevicePref,
     ModelHandle, SamplingCfg, SpecCfg, Tok,
 };
 
@@ -100,10 +100,8 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let device = pick_device_with(args.device)?;
-
     let t0 = Instant::now();
-    let mut model = ModelHandle::load(&args.gguf, &device)?;
+    let mut model = ModelHandle::load(&args.gguf, args.device)?;
     let n_blocks = model.block_count() as u16;
     if model.pipelined().is_none() {
         return Err(anyhow!(
@@ -151,7 +149,7 @@ async fn main() -> Result<()> {
     // knobs so the comparison against plain decode is apples-to-apples.
     let draft_model = if let Some(ref p) = args.draft {
         let t_draft = Instant::now();
-        let mut h = ModelHandle::load(p, &device)
+        let mut h = ModelHandle::load(p, args.device)
             .with_context(|| format!("loading draft {}", p.display()))?;
         if h.pipelined().is_none() {
             return Err(anyhow!("draft arch {:?} is not pipelined", h.kind()));

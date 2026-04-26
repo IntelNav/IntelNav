@@ -27,7 +27,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use candle_core::Device;
 use clap::Parser;
 
 use intelnav_ggml::Hidden;
@@ -66,7 +65,6 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let device = Device::Cpu;
 
     // 4-token "Hello my name is" on Qwen2.5's tokenizer — the same
     // prompt the bit-identical tests use.
@@ -95,7 +93,6 @@ fn main() -> Result<()> {
 
     // Prefill.
     let t_pf = Instant::now();
-    let _ = &device; // candle Device kept only for signature parity
     let logits = model.forward(&prompt_ids, 0)?;
     let prefill_ms = t_pf.elapsed().as_secs_f64() * 1000.0;
     let mut index_pos = prompt_ids.len();

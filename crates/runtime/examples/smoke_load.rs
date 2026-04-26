@@ -1,7 +1,7 @@
 //! Sanity check: load a GGUF, run the full forward, then split the
 //! transformer at the midpoint (`embed → forward_range(0, N/2) →
 //! forward_range(N/2, N) → head`) and assert the two paths produce
-//! the same logits. This is the M1 pipeline-split correctness gate.
+//! the same logits. This is the pipeline-split correctness gate.
 //!
 //! Usage:
 //!
@@ -12,9 +12,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use candle_core::Tensor;
 
-use intelnav_runtime::{pick_device, ModelHandle};
+use intelnav_runtime::{DevicePref, ModelHandle};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -29,15 +28,14 @@ fn main() -> Result<()> {
         .expect("usage: smoke_load <gguf-path>")
         .into();
 
-    let device = pick_device()?;
     let t0 = Instant::now();
-    let mut model = ModelHandle::load(&path, &device)?;
+    let mut model = ModelHandle::load(&path, DevicePref::Auto)?;
     println!("loaded {:?} in {:.2?}", model.kind(), t0.elapsed());
 
     let m = model.pipelined()
         .ok_or_else(|| anyhow!("model arch doesn't support layer-split yet"))?;
 
-    let tokens = Tensor::new(&[1u32, 2, 3, 4, 5, 6, 7, 8], &device)?.unsqueeze(0)?;
+    let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let n = m.block_count();
     let split = n / 2;
 
@@ -60,23 +58,24 @@ fn main() -> Result<()> {
     );
 
     // --- compare ---
-    let a = logits_full.flatten_all()?.to_vec1::<f32>()?;
-    let b = logits_split.flatten_all()?.to_vec1::<f32>()?;
-    if a.len() != b.len() {
+    // Both are `Hidden` with shape `[1, vocab]` for head output.
+    if logits_full.data.len() != logits_split.data.len() {
         return Err(anyhow!(
-            "logits shape mismatch: full={} split={}",
-            a.len(),
-            b.len()
+            "logits shape mismatch: full={:?} split={:?}",
+            logits_full.shape, logits_split.shape,
         ));
     }
     let (mut max_abs, mut max_rel) = (0f32, 0f32);
-    for (x, y) in a.iter().zip(&b) {
+    for (x, y) in logits_full.data.iter().zip(&logits_split.data) {
         let d = (x - y).abs();
         max_abs = max_abs.max(d);
         let denom = x.abs().max(1e-6);
         max_rel = max_rel.max(d / denom);
     }
-    println!("max_abs_diff={max_abs:e}  max_rel_diff={max_rel:e}  (logits_len={})", a.len());
+    println!(
+        "max_abs_diff={max_abs:e}  max_rel_diff={max_rel:e}  (logits_len={})",
+        logits_full.data.len(),
+    );
 
     if max_abs > 1e-3 {
         return Err(anyhow!(

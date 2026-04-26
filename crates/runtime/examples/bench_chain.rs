@@ -36,7 +36,7 @@ use clap::Parser;
 use intelnav_wire::Phase;
 
 use intelnav_runtime::{
-    front_forward, head_forward, pick_device_with, qwen_chat_prompt, Chain, ChainCfg, DevicePref,
+    front_forward, head_forward, qwen_chat_prompt, Chain, ChainCfg, DevicePref,
     ModelHandle, Tok,
 };
 
@@ -100,10 +100,8 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let device = pick_device_with(args.device)?;
-
     let t_load = Instant::now();
-    let mut model = ModelHandle::load(&args.gguf, &device)?;
+    let mut model = ModelHandle::load(&args.gguf, args.device)?;
     let n_blocks = model.block_count() as u16;
     if model.pipelined().is_none() {
         return Err(anyhow!(

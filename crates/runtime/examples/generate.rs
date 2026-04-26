@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 
 use intelnav_runtime::{
-    generate, pick_device_with, qwen_chat_prompt, DevicePref, ModelHandle, SamplingCfg, Tok,
+    generate, qwen_chat_prompt, DevicePref, ModelHandle, SamplingCfg, Tok,
 };
 
 #[derive(Parser, Debug)]
@@ -66,7 +66,6 @@ fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let device = pick_device_with(args.device)?;
 
     let tok_path = args.tokenizer
         .clone()
@@ -77,7 +76,7 @@ fn main() -> Result<()> {
         ))?;
 
     let t0 = Instant::now();
-    let mut model = ModelHandle::load(&args.gguf, &device)?;
+    let mut model = ModelHandle::load(&args.gguf, args.device)?;
     let tok = Tok::load(&tok_path)?;
     eprintln!("loaded {:?} + tokenizer in {:.2?}", model.kind(), t0.elapsed());
 
@@ -97,7 +96,7 @@ fn main() -> Result<()> {
     };
 
     let t = Instant::now();
-    let n = generate(model.forwarding(), &tok, &device, &prompt, &cfg, |chunk| {
+    let n = generate(model.forwarding(), &tok, &prompt, &cfg, |chunk| {
         print!("{chunk}");
         std::io::stdout().flush().ok();
         Ok(())

@@ -20,7 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 
 use intelnav_runtime::{
-    build_chat_prompt, pick_device_with, run_turn, run_turn_spec, Chain, ChainCfg, ChatTurn,
+    build_chat_prompt, run_turn, run_turn_spec, Chain, ChainCfg, ChatTurn,
     DevicePref, Dtype, ModelHandle, ModelKind, SamplingCfg, SpecCfg, Tok,
 };
 
@@ -168,7 +168,7 @@ impl ChainDriver {
         let driver = self.clone();
 
         // The chain is async (tokio TCP) while forward passes are
-        // sync blocking (candle). Run the whole turn on a dedicated
+        // sync blocking (ggml forward). Run the whole turn on a dedicated
         // single-thread runtime so we can freely await + compute in
         // sequence without blocking the main runtime's worker.
         std::thread::spawn(move || {
@@ -213,8 +213,6 @@ impl ChainDriver {
             .map(|m| ChatTurn { role: m.role.as_str(), content: m.content.as_str() })
             .collect();
         let prompt = build_chat_prompt(kind, &turns);
-
-        let device = pick_device_with(self.device_pref)?;
 
         // Load the draft model if spec-dec is enabled. Held in its
         // own slot so target and draft caches don't fight for one lock.
@@ -312,8 +310,7 @@ impl ChainDriver {
         if let Some(l) = slot.as_ref() {
             if l.path == dc.path { return Ok(()); }
         }
-        let device = pick_device_with(self.device_pref)?;
-        let handle = ModelHandle::load(&dc.path, &device)
+        let handle = ModelHandle::load(&dc.path, self.device_pref)
             .with_context(|| format!("loading draft {}", dc.path.display()))?;
         *slot = Some(LoadedDraft { path: dc.path.clone(), handle });
         Ok(())
@@ -326,8 +323,7 @@ impl ChainDriver {
         }
         let tok_path = model.tokenizer.clone()
             .ok_or_else(|| anyhow!("no tokenizer.json next to {}", model.path.display()))?;
-        let device = pick_device_with(self.device_pref)?;
-        let handle = ModelHandle::load(&model.path, &device)
+        let handle = ModelHandle::load(&model.path, self.device_pref)
             .with_context(|| format!("loading {}", model.path.display()))?;
         let tok = Tok::load(&tok_path)
             .with_context(|| format!("loading tokenizer {}", tok_path.display()))?;

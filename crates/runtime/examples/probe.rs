@@ -2,6 +2,11 @@
 //! mini-benchmark so operators can see realistic tok/s before
 //! joining the network.
 //!
+//! Mostly superseded by `intelnav doctor` (which covers the same
+//! hardware probe plus libllama load + backend resolution). Kept
+//! as an example because it exercises the runtime in isolation
+//! — handy for bisecting runtime issues without the CLI stack.
+//!
 //!     cargo run -p intelnav-runtime --example probe --release
 //!     cargo run -p intelnav-runtime --example probe --release -- \
 //!         --gguf /path/to/model.gguf --bench-tokens 32
@@ -10,10 +15,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
-use candle_core::Tensor;
 use clap::Parser;
 
-use intelnav_runtime::{pick_device_with, DevicePref, ModelHandle, Probe, SamplingCfg, Tok};
+use intelnav_runtime::{DevicePref, ModelHandle, Probe, Tok};
 
 #[derive(Parser, Debug)]
 #[command(name = "probe", about = "Hardware report + optional model micro-bench")]
@@ -45,13 +49,12 @@ fn main() -> Result<()> {
 
     let Some(gguf) = args.gguf else { return Ok(()); };
 
-    let device  = pick_device_with(args.device)?;
     let tok_path = Tok::locate_for(&gguf)
         .ok_or_else(|| anyhow!("no tokenizer.json beside {}", gguf.display()))?;
 
     println!("\n--- load ---");
     let t = Instant::now();
-    let mut model = ModelHandle::load(&gguf, &device)?;
+    let mut model = ModelHandle::load(&gguf, args.device)?;
     let tok = Tok::load(&tok_path)?;
     println!("loaded {:?} + tokenizer in {:.2?}", model.kind(), t.elapsed());
 
@@ -62,23 +65,18 @@ fn main() -> Result<()> {
     let ids = tok.encode(prompt)?;
     model.reset_cache();
     let t = Instant::now();
-    let input = Tensor::new(ids.as_slice(), &device)?.unsqueeze(0)?;
-    let _ = model.forward(&input, 0)?;
+    let _ = model.forward(&ids, 0)?;
     let prefill_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-    // Decode: greedy, ignore logits processor — we just want timings.
+    // Decode: greedy, argmax the head output directly.
     let mut tokens = ids.clone();
-    let cfg = SamplingCfg { temperature: 0.0, top_p: None, ..Default::default() };
-    let _ = cfg; // SamplingCfg unused in tight bench; greedy via argmax
 
     let t = Instant::now();
     for _ in 0..args.bench_tokens {
         let last = *tokens.last().unwrap();
         let idx = tokens.len() - 1;
-        let input = Tensor::new(&[last], &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, idx)?;
-        let logits = logits.squeeze(0)?.to_dtype(candle_core::DType::F32)?;
-        let id = argmax_u32(&logits)?;
+        let logits = model.forward(&[last], idx)?;
+        let id = logits.argmax_last()?;
         tokens.push(id);
     }
     let decode_s = t.elapsed().as_secs_f64();
@@ -87,20 +85,7 @@ fn main() -> Result<()> {
     println!("\n--- bench ---");
     println!("model:    {} layers", block_count);
     println!("prefill:  {} tokens in {prefill_ms:.1} ms", ids.len());
-    println!("decode:   {} tokens in {decode_s:.2}s  →  {tok_per_s:.1} tok/s",
+    println!("decode:   {} tokens in {decode_s:.2}s  ->  {tok_per_s:.1} tok/s",
              args.bench_tokens);
     Ok(())
-}
-
-fn argmax_u32(logits: &Tensor) -> Result<u32> {
-    let v = logits.to_vec1::<f32>()?;
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > best_v {
-            best_v = x;
-            best = i;
-        }
-    }
-    Ok(best as u32)
 }

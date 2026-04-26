@@ -16,11 +16,10 @@
 //! `forward_range` calls on different hosts.
 
 use anyhow::{anyhow, Result};
-use candle_core::Device;
-use candle_transformers::generation::LogitsProcessor;
 
 use crate::model::ModelKind;
 use crate::pipeline::Forwarding;
+use crate::sample::{Sampler, SamplerCfg};
 use crate::tokenizer::Tok;
 
 #[derive(Clone, Debug)]
@@ -98,7 +97,6 @@ pub fn build_chat_prompt(_kind: ModelKind, turns: &[ChatTurn<'_>]) -> String {
 pub fn generate<F: FnMut(&str) -> Result<()>>(
     model:  &mut dyn Forwarding,
     tok:    &Tok,
-    _device: &Device,
     prompt: &str,
     cfg:    &SamplingCfg,
     mut on_token: F,
@@ -110,12 +108,13 @@ pub fn generate<F: FnMut(&str) -> Result<()>>(
         return Err(anyhow!("prompt tokenized to zero tokens"));
     }
 
-    let mut logits_processor = LogitsProcessor::new(cfg.seed, Some(cfg.temperature), cfg.top_p);
+    let mut sampler = Sampler::new(cfg.seed, cfg.temperature, cfg.top_p);
+    let scfg = SamplerCfg { repeat_penalty: cfg.repeat_penalty, repeat_ctx: cfg.repeat_ctx };
     let mut decoder = tok.incremental();
 
     // --- prompt pass ---
     let logits = model.forward(&tokens, 0)?;
-    let mut next = sample_next(&logits.data, &mut logits_processor, &tokens, cfg)?;
+    let mut next = sampler.sample(&logits.data, &tokens, &scfg)?;
 
     let mut n_gen = 0usize;
     loop {
@@ -130,28 +129,8 @@ pub fn generate<F: FnMut(&str) -> Result<()>>(
 
         let idx = tokens.len() - 1;
         let logits = model.forward(&[next], idx)?;
-        next = sample_next(&logits.data, &mut logits_processor, &tokens, cfg)?;
+        next = sampler.sample(&logits.data, &tokens, &scfg)?;
     }
 
     Ok(n_gen)
-}
-
-/// Sample the next token from a `[vocab]`-shaped logit slice. Keeps
-/// candle confined to this one function — the hot-path Pipelined
-/// calls stay Tensor-free.
-fn sample_next(
-    logits: &[f32],
-    lp:     &mut LogitsProcessor,
-    ctx:    &[u32],
-    cfg:    &SamplingCfg,
-) -> Result<u32> {
-    use candle_core::{Device, Tensor};
-    let t = Tensor::from_slice(logits, &[logits.len()], &Device::Cpu)?;
-    let t = if cfg.repeat_penalty > 1.0 {
-        let start = ctx.len().saturating_sub(cfg.repeat_ctx);
-        candle_transformers::utils::apply_repeat_penalty(&t, cfg.repeat_penalty, &ctx[start..])?
-    } else {
-        t
-    };
-    Ok(lp.sample(&t)?)
 }
