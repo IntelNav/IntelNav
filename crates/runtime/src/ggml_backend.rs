@@ -187,15 +187,34 @@ impl Pipelined for GgmlBackend {
         let n_embd = self.n_embd;
         let n_vocab = self.n_vocab;
 
-        let mut batch = gg::Batch::embeddings(seq, n_embd, 1);
-        batch.fill_embeddings_in(&hidden.data, seq, 0, HEAD_SCRATCH_SEQ, true);
+        // ROCm head_only correctness workaround.
+        //
+        // libllama's head_only path produces a ~0.2 max_abs_diff vs
+        // stock decode on ROCm when the embd batch carries
+        // n_tokens >= 9 (matches `MMVQ_MAX_BATCH_SIZE = 8` in
+        // ggml-cuda's mmvq dispatch). The lm_head is position-wise,
+        // so feeding *only* the last token's hidden row produces the
+        // same logits as feeding the full sequence with
+        // `logits_last_only=true`, but lets the graph stay below
+        // the buggy threshold.
+        //
+        // Pre-sliced unconditionally (not just on ROCm) — saves
+        // bytes on the upload, simplifies the kv_seq_rm scope, and
+        // avoids backend-detection plumbing here. Mathematically
+        // identical to the previous "fill seq, last_only=true"
+        // shape on every backend.
+        let last_off = ((seq - 1) as usize) * (n_embd as usize);
+        let last_row = &hidden.data[last_off..last_off + (n_embd as usize)];
+
+        let mut batch = gg::Batch::embeddings(1, n_embd, 1);
+        batch.fill_embeddings_in(last_row, 1, 0, HEAD_SCRATCH_SEQ, true);
 
         self.session.ctx().head_only(&batch).context("head_only")?;
 
         let logits = self
             .session
             .ctx()
-            .get_logits_ith(seq - 1, n_vocab as usize)?
+            .get_logits_ith(0, n_vocab as usize)?
             .to_vec();
 
         let _ = self.session.ctx().kv_seq_rm(HEAD_SCRATCH_SEQ, -1, -1);
