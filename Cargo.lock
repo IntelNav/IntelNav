@@ -1916,6 +1916,7 @@ dependencies = [
 name = "intelnav-net"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "futures",
  "futures-util",
@@ -1924,6 +1925,7 @@ dependencies = [
  "intelnav-core",
  "intelnav-crypto",
  "intelnav-wire",
+ "libp2p",
  "mdns-sd",
  "reqwest",
  "serde",

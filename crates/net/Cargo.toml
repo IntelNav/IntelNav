@@ -24,3 +24,12 @@ mdns-sd       = { workspace = true }
 if-addrs      = { workspace = true }
 hex           = { workspace = true }
 reqwest       = { workspace = true }
+
+# libp2p substrate (paper §6, M2). Same major as the model-store
+# Path-B fetcher so the swarm can co-exist; transport features are
+# the M2-mandated set: TCP for the LAN/WAN starting point, Noise XX
+# for handshake, yamux for multiplexing. identify + ping make the
+# substrate observable; kad / dcutr / relay / gossipsub follow as
+# their respective M2 sub-tasks land.
+libp2p        = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "identify", "ping", "macros"] }
+anyhow        = { workspace = true }
