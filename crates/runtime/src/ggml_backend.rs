@@ -25,20 +25,19 @@ use crate::pipeline::{Forwarding, Pipelined};
 /// stays pristine.
 const HEAD_SCRATCH_SEQ: i32 = 1;
 
-/// Hard upper bound on a single Pipelined call's sequence length.
-/// Stops a malicious peer (or a local bug) from asking for an
-/// absurdly large batch. Matches the default `INTELNAV_NCTX=2048`
-/// with headroom; callers wanting more must bump both.
-const MAX_BATCH_TOKENS: usize = 4096;
-
 /// ggml-backed `Pipelined` model. Only `batch == 1` is supported —
 /// matches every IntelNav call path today; M3's continuous-batching
-/// gateway (task #20) grows this.
+/// gateway will grow this.
 pub struct GgmlBackend {
     session: gg::Session,
     n_embd:  i32,
     n_layer: i32,
     n_vocab: i32,
+    /// Caller-configured context length. The adapter clamps every
+    /// inbound `Hidden::shape[1]` and token slice against this so a
+    /// crafted `ForwardHidden` payload with an oversized `n_tokens`
+    /// can't OOM us or trip llama.cpp's KV-slot allocator.
+    n_ctx:   i32,
 }
 
 impl GgmlBackend {
@@ -58,20 +57,22 @@ impl GgmlBackend {
         let n_layer = m.n_layer();
         let n_vocab = m.vocab().n_tokens();
 
-        Ok(Self { session, n_embd, n_layer, n_vocab })
+        Ok(Self { session, n_embd, n_layer, n_vocab, n_ctx: n_ctx as i32 })
     }
 
     pub fn n_embd(&self)  -> i32 { self.n_embd  }
     pub fn n_layer(&self) -> i32 { self.n_layer }
     pub fn n_vocab(&self) -> i32 { self.n_vocab }
+    pub fn n_ctx(&self)   -> i32 { self.n_ctx   }
 }
 
 // ---------- helpers ----------
 
-fn ids_to_i32(ids: &[u32]) -> Result<Vec<i32>> {
-    if ids.is_empty() || ids.len() > MAX_BATCH_TOKENS {
+fn ids_to_i32(ids: &[u32], n_ctx: i32) -> Result<Vec<i32>> {
+    let max = n_ctx as usize;
+    if ids.is_empty() || ids.len() > max {
         return Err(anyhow!(
-            "ggml adapter: token slice len {} out of bounds (0, {MAX_BATCH_TOKENS}]",
+            "ggml adapter: token slice len {} out of bounds (0, {max}] (n_ctx)",
             ids.len()
         ));
     }
@@ -79,7 +80,12 @@ fn ids_to_i32(ids: &[u32]) -> Result<Vec<i32>> {
 }
 
 /// Validate an incoming Hidden as `[1, seq, n_embd]`. Returns `seq`.
-fn check_hidden(hidden: &Hidden, expect_hidden: i32) -> Result<usize> {
+///
+/// Hostile-peer entry point: every `forward_range` / `head` /
+/// `head_all` call carries a `Hidden` from the wire. We reject any
+/// shape we wouldn't safely allocate for *before* asking libllama to
+/// do anything with it.
+fn check_hidden(hidden: &Hidden, expect_hidden: i32, n_ctx: i32) -> Result<usize> {
     if hidden.shape.len() != 3 {
         return Err(anyhow!(
             "ggml adapter: expected rank-3 Hidden [1, seq, hidden], got shape {:?}",
@@ -90,14 +96,25 @@ fn check_hidden(hidden: &Hidden, expect_hidden: i32) -> Result<usize> {
     if b != 1 {
         return Err(anyhow!("ggml adapter: only batch=1 supported, got {b}"));
     }
-    if seq == 0 || seq > MAX_BATCH_TOKENS {
+    let max_seq = n_ctx as usize;
+    if seq == 0 || seq > max_seq {
         return Err(anyhow!(
-            "ggml adapter: seq_len {seq} out of bounds (0, {MAX_BATCH_TOKENS}]"
+            "ggml adapter: seq_len {seq} out of bounds (0, {max_seq}] (n_ctx)"
         ));
     }
     if h as i32 != expect_hidden {
         return Err(anyhow!(
             "ggml adapter: hidden dim mismatch (input {h}, model {expect_hidden})"
+        ));
+    }
+    let expected_data = seq.checked_mul(h).ok_or_else(|| {
+        anyhow!("ggml adapter: seq*hidden overflow ({seq} * {h})")
+    })?;
+    if hidden.data.len() != expected_data {
+        return Err(anyhow!(
+            "ggml adapter: data len {} != seq*hidden {expected_data} (shape {:?})",
+            hidden.data.len(),
+            hidden.shape
         ));
     }
     Ok(seq)
@@ -120,7 +137,7 @@ impl Forwarding for GgmlBackend {
     }
 
     fn forward(&mut self, input_ids: &[u32], index_pos: usize) -> Result<Hidden> {
-        let ids = ids_to_i32(input_ids)?;
+        let ids = ids_to_i32(input_ids, self.n_ctx)?;
         let seq = ids.len() as i32;
         let n_layer = self.n_layer;
         let n_vocab = self.n_vocab;
@@ -146,7 +163,7 @@ impl Forwarding for GgmlBackend {
 
 impl Pipelined for GgmlBackend {
     fn embed(&mut self, input_ids: &[u32]) -> Result<Hidden> {
-        let ids = ids_to_i32(input_ids)?;
+        let ids = ids_to_i32(input_ids, self.n_ctx)?;
         let seq = ids.len() as i32;
         let n_embd = self.n_embd;
 
@@ -168,7 +185,7 @@ impl Pipelined for GgmlBackend {
         start:     usize,
         end:       usize,
     ) -> Result<Hidden> {
-        let seq = check_hidden(hidden, self.n_embd)? as i32;
+        let seq = check_hidden(hidden, self.n_embd, self.n_ctx)? as i32;
         let n_embd = self.n_embd;
 
         let mut batch = gg::Batch::embeddings(seq, n_embd, 1);
@@ -183,7 +200,7 @@ impl Pipelined for GgmlBackend {
     }
 
     fn head(&mut self, hidden: &Hidden) -> Result<Hidden> {
-        let seq = check_hidden(hidden, self.n_embd)? as i32;
+        let seq = check_hidden(hidden, self.n_embd, self.n_ctx)? as i32;
         let n_embd = self.n_embd;
         let n_vocab = self.n_vocab;
 
@@ -223,7 +240,7 @@ impl Pipelined for GgmlBackend {
     }
 
     fn head_all(&mut self, hidden: &Hidden) -> Result<Hidden> {
-        let seq = check_hidden(hidden, self.n_embd)? as i32;
+        let seq = check_hidden(hidden, self.n_embd, self.n_ctx)? as i32;
         let n_embd = self.n_embd;
         let n_vocab = self.n_vocab;
 
