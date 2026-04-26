@@ -1,0 +1,189 @@
+name: IntelNav CLI release
+
+# Builds prebuilt intelnav / intelnav-chunk / pipe_peer / bench_chain
+# binaries for every (OS × arch) we realistically support, so a user
+# can `curl | tar | run` instead of `git clone && cargo build` (which
+# was ~4 min on a 2-core laptop — the exact UX friction #29 flagged).
+#
+# Each job emits `intelnav-<os-arch>-<short-sha>.tar.gz` with:
+#   bin/intelnav            — the main CLI
+#   bin/intelnav-chunk      — Path B chunker / fetcher / serve
+#   bin/pipe_peer           — layer-range peer daemon (Path B capable)
+#   bin/pipe_driver         — driver used with pipe_peer
+#   bin/bench_chain         — local bench harness
+#   LICENSE
+#   README.md               — short "how to pair with libllama" blurb
+#   INTELNAV_VERSION        — git rev, read by `intelnav doctor`
+#
+# Paired with `IntelNav/llama.cpp@intelnav-release.yml`, which
+# produces the matching `libllama-*.tar.gz` tarballs — together they
+# form the complete offline-install bundle.
+
+on:
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: "Upload artifacts to a GitHub Release (requires a tag)."
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'intelnav-cli-v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # linux-x64 — covers the mainstream Linux + WSL2 install.
+  # ---------------------------------------------------------------------
+  linux-x64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential pkg-config libssl-dev
+      - name: Rust toolchain
+        run: rustc --version && cargo --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: intelnav-release-linux-x64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: intelnav-release-linux-x64-
+
+      - name: Build release binaries
+        run: |
+          # Bins only — examples `smoke_load`/`probe` still use pre-Hidden
+          # candle APIs and won't compile; keep them out of the release.
+          cargo build --release \
+            -p intelnav-cli --bin intelnav \
+            -p intelnav-model-store --features serve,p2p --bin intelnav-chunk
+          cargo build --release \
+            -p intelnav-runtime --example pipe_peer --example pipe_driver --example bench_chain
+
+      - name: Package
+        shell: bash
+        run: bash .github/actions/intelnav-cli-pack.sh linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelnav-linux-x64
+          path: dist/*.tar.gz
+
+  # ---------------------------------------------------------------------
+  # macos-arm64 — M-series Macs (first M1 runner that ships on GH CI).
+  # ---------------------------------------------------------------------
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Rust toolchain
+        run: rustc --version && cargo --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: intelnav-release-macos-arm64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: intelnav-release-macos-arm64-
+
+      - name: Build release binaries
+        run: |
+          cargo build --release \
+            -p intelnav-cli --bin intelnav \
+            -p intelnav-model-store --features serve,p2p --bin intelnav-chunk
+          cargo build --release \
+            -p intelnav-runtime --example pipe_peer --example pipe_driver --example bench_chain
+
+      - name: Package
+        shell: bash
+        run: bash .github/actions/intelnav-cli-pack.sh macos-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelnav-macos-arm64
+          path: dist/*.tar.gz
+
+  # ---------------------------------------------------------------------
+  # windows-x64 — MSVC toolchain, default for GH windows runners.
+  # ---------------------------------------------------------------------
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Rust toolchain
+        run: rustc --version; cargo --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: intelnav-release-windows-x64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: intelnav-release-windows-x64-
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          cargo build --release \
+            -p intelnav-cli --bin intelnav \
+            -p intelnav-model-store --features serve,p2p --bin intelnav-chunk
+          cargo build --release \
+            -p intelnav-runtime --example pipe_peer --example pipe_driver --example bench_chain
+
+      - name: Package
+        shell: bash
+        run: bash .github/actions/intelnav-cli-pack.sh windows-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelnav-windows-x64
+          path: dist/*.tar.gz
+
+  # ---------------------------------------------------------------------
+  # Publish to a GitHub Release on tag push. Skipped on push without a
+  # tag and on workflow_dispatch unless `make_release` is set.
+  # ---------------------------------------------------------------------
+  publish-release:
+    needs: [linux-x64, macos-arm64, windows-x64]
+    if: startsWith(github.ref, 'refs/tags/intelnav-cli-v') || inputs.make_release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents:     write
+      attestations: write
+      id-token:     write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect artifacts
+        id:   collect
+        run: |
+          mkdir -p dist
+          find artifacts -name '*.tar.gz' -exec cp {} dist/ \;
+          ls -la dist/
+          {
+            echo "paths<<EOF"
+            ls dist/*.tar.gz
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Generate build-provenance attestation
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.collect.outputs.paths }}
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true

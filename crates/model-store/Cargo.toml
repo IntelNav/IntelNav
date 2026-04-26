@@ -1,0 +1,48 @@
+[package]
+name        = "intelnav-model-store"
+description = "Content-addressed tensor chunker + (future) downloader for IntelNav models. See docs/dev/RUNTIME_DECISION.md and the Path B task chain (#24-#27)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[[bin]]
+name = "intelnav-chunk"
+path = "src/bin/intelnav_chunk.rs"
+
+[dependencies]
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+memmap2    = "0.9"
+sha2       = { workspace = true }
+multihash  = "0.19"
+cid        = "0.11"
+clap       = { workspace = true }
+hex        = { workspace = true }
+reqwest    = { workspace = true }
+tokio      = { workspace = true }
+futures-util = { workspace = true }
+url        = "2"
+axum       = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+
+# libp2p stack for phase 4. Kept behind `p2p` feature — adds ~40
+# transitive deps (noise, yamux, kad, request-response, identify,
+# etc.) that consumers without a P2P need shouldn't pay for.
+libp2p     = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "kad", "request-response", "identify", "macros", "ping", "cbor"], optional = true }
+async-trait = { workspace = true, optional = true }
+
+[features]
+default = []
+# `intelnav-chunk serve` — tiny HTTP surface for local testing. Kept
+# behind a feature so the default build doesn't pull axum/tower-http.
+serve = ["dep:axum", "dep:tower-http", "dep:tokio-util"]
+# Phase 4 P2P fetcher. Mirrors `http` module's interface, swaps the
+# transport for a libp2p Kademlia swarm with provider records and a
+# request-response protocol that streams chunks between peers.
+p2p   = ["dep:libp2p", "dep:async-trait"]

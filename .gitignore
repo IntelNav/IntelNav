@@ -1,0 +1,61 @@
+# ── Rust ──────────────────────────────────────────────────────────
+/target
+**/*.rs.bk
+*.profraw
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+pip-wheel-metadata/
+
+# ── Editors & OS ──────────────────────────────────────────────────
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+Thumbs.db
+
+# ── IntelNav local state ──────────────────────────────────────────
+# Downloaded / cached weights. Tests fetch them into standard dirs;
+# no reason to commit any.
+/models/
+*.gguf
+*.safetensors
+
+# Runtime state — logs, identities, live configs
+*.log
+/tmp/
+.cache/
+intelnav.log
+identity.key
+
+# Bench / profiling output
+bench*.json
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Env files — never commit secrets / API keys
+.env
+.env.*
+!.env.example

@@ -1,0 +1,6 @@
+[2m2026-04-22T12:54:54.929831Z[0m [32m INFO[0m [2mintelnav_runtime::device[0m[2m:[0m runtime: using CPU (no GPU backend available)
+loaded Qwen2 + tokenizer in 1.23s
+TCP stands for Transmission Control Protocol,
+It's a protocol that connects devices,
+Together they make the internet possible.
+generated 22 tokens in 2.74s (8.0 tok/s)

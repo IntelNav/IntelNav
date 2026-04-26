@@ -1,0 +1,16 @@
+[package]
+name        = "intelnav-wire"
+description = "CBOR wire format for the IntelNav protocol (paper §4.5, §A)."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+intelnav-core = { workspace = true }
+
+serde      = { workspace = true }
+ciborium   = { workspace = true }
+bytes      = { workspace = true }
+thiserror  = { workspace = true }
+hex        = { workspace = true }

@@ -1,0 +1,27 @@
+[package]
+name        = "intelnav-ggml"
+description = "FFI bindings to the IntelNav-patched llama.cpp (layer-range forward). See docs/dev/RUNTIME_DECISION.md."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[dependencies]
+intelnav-core = { workspace = true }
+intelnav-wire = { workspace = true }
+
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+half        = { workspace = true }
+serde       = { workspace = true }
+libloading  = "0.8"
+
+[build-dependencies]
+# No link-time dependency on libllama — it's dlopened at runtime via
+# the Loader. build.rs stays in place only to surface the rerun-if-env
+# hints for the locator env vars.
+
+[dev-dependencies]
+tracing-subscriber   = { workspace = true }
+intelnav-model-store = { workspace = true }

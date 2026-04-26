@@ -1,0 +1,26 @@
+[package]
+name        = "intelnav-net"
+description = "Peer discovery and network substrate (mDNS today, libp2p DHT in M2)."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+intelnav-core   = { workspace = true }
+intelnav-wire   = { workspace = true }
+intelnav-crypto = { workspace = true }
+
+tokio         = { workspace = true }
+async-trait   = { workspace = true }
+futures       = { workspace = true }
+futures-util  = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }
+
+mdns-sd       = { workspace = true }
+if-addrs      = { workspace = true }
+hex           = { workspace = true }
+reqwest       = { workspace = true }

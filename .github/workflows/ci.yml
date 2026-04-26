@@ -1,0 +1,300 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_gpu_matrix:
+        description: "Run integration-gpu jobs (needs self-hosted runners)."
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Not setting RUSTFLAGS=-D warnings yet — workspace has known dead-code
+  # warnings (unused helpers in theme.rs, tui.rs) that predate CI. Enable
+  # once those are either annotated or removed.
+
+jobs:
+  # ---------------------------------------------------------------------
+  # cargo check on Linux. Single-OS because `cargo check` on multiple
+  # platforms buys little over the real per-OS test job below. Gate for
+  # the rest of the matrix so a broken workspace fails fast.
+  # ---------------------------------------------------------------------
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: rust toolchain (respects rust-toolchain.toml)
+        run: rustc --version && cargo --version
+
+      - name: cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-check-
+
+      # NOTE: `--lib --bins --tests`, NOT `--all-targets`. Two
+      # pre-existing runtime examples (`smoke_load`, `probe`) still
+      # reference candle::Tensor APIs from before the Hidden refactor
+      # and fail to compile. Fixing them is out of scope for CI
+      # bring-up; when they get ported, switch this back to --all-targets.
+      - name: cargo check --workspace --lib --bins --tests
+        run: cargo check --workspace --lib --bins --tests
+
+      # Examples that matter for Path B (pipe_peer, pipe_driver,
+      # bench_chain, bench_ggml) compile in isolation — check them
+      # explicitly so regressions there still trip CI.
+      - name: cargo check (Path B examples)
+        run: |
+          cargo check --example pipe_peer -p intelnav-runtime
+          cargo check --example pipe_driver -p intelnav-runtime
+          cargo check --example bench_chain -p intelnav-runtime
+          cargo check --example bench_ggml -p intelnav-runtime
+
+  # ---------------------------------------------------------------------
+  # Cross-OS pure-Rust tests. The chunker, stitcher, manifest, fetcher,
+  # and serve-subcommand all run without libllama; if they regress on
+  # Windows or macOS we need to know. Uses the synthetic-GGUF fixture
+  # (crates/model-store/tests/common/mod.rs) so no model download.
+  # ---------------------------------------------------------------------
+  test:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: check
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
+
+      # Every crate except `intelnav-ggml` and `intelnav-runtime` is
+      # pure Rust — `intelnav-ggml` dlopens libllama, `intelnav-runtime`
+      # depends on it, and both get their own integration job below.
+      # We run the other crates here on all three OSes, and turn on the
+      # `serve` feature on `intelnav-model-store` so the axum-based HTTP
+      # surface is also covered cross-platform.
+      - name: cargo test (pure-Rust crates, model-store with serve + p2p)
+        shell: bash
+        run: |
+          cargo test --no-fail-fast \
+            -p intelnav-core \
+            -p intelnav-wire \
+            -p intelnav-crypto \
+            -p intelnav-net \
+            -p intelnav-gateway \
+            -p intelnav-registry \
+            -- --test-threads=1
+          # One run with both optional features on so the axum serve
+          # surface, the libp2p phase-4 path, and their integration
+          # tests (ci_roundtrip, http_roundtrip, p2p_roundtrip) all
+          # exercise on every supported OS.
+          cargo test --no-fail-fast \
+            -p intelnav-model-store --features serve,p2p \
+            -- --test-threads=1
+
+  # ---------------------------------------------------------------------
+  # Integration tests that require a real libllama + a real GGUF. Runs
+  # only on Linux x86_64 for now — that's the backend coverage
+  # `intelnav-release.yml` in the llama.cpp fork currently publishes
+  # (CPU, Vulkan, ROCm). Expands as we add macOS-arm64 Metal / CUDA /
+  # Windows builds to that workflow.
+  # ---------------------------------------------------------------------
+  integration:
+    name: integration (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 60
+    # If the libllama artifact isn't published yet the download step
+    # sets SKIP=1 and the rest no-ops cleanly; we don't need
+    # continue-on-error to mask real failures.
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [cpu, vulkan]
+        # ROCm needs an AMD GPU at runtime. The tarball is downloadable
+        # but forward-pass tests would fail on a GPU-less hosted runner.
+        # Run ROCm via the `integration-gpu` self-hosted matrix instead.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libssl-dev curl
+
+      - name: cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ matrix.backend }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integration-${{ matrix.backend }}-
+
+      # Fetch the latest published libllama for this backend. Pack.sh
+      # names tarballs `libllama-<os-arch-backend>-<short_sha>.tar.gz`,
+      # so we match on a pattern instead of hardcoding the SHA. Falls
+      # through gracefully (SKIP=1) when no release exists yet, which
+      # is the state until the maintainer cuts the first `intelnav-v*`
+      # tag on the `IntelNav/llama.cpp` fork.
+      - name: download libllama artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/intelnav/libllama"
+          if ! gh release download --repo IntelNav/llama.cpp \
+                --pattern "libllama-linux-x64-${BACKEND}-*.tar.gz" \
+                --dir /tmp 2>&1; then
+            echo "::warning::no libllama release for linux-x64-${BACKEND} yet"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tar xzf /tmp/libllama-linux-x64-${BACKEND}-*.tar.gz \
+            -C "$HOME/.cache/intelnav/libllama" --strip-components=1
+          ls -la "$HOME/.cache/intelnav/libllama/"
+
+      # A small real GGUF for the stitched_load forward-equivalence
+      # gates. Qwen2.5-0.5B Q4_K_M is the smallest mainstream
+      # published file (~469 MB) and covers the qwen2 arch path.
+      - name: download test model (Qwen2.5-0.5B Q4_K_M)
+        if: env.SKIP != '1'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/IntelNav/models"
+          curl --fail --location --silent --show-error \
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+            -o "$HOME/IntelNav/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          ls -la "$HOME/IntelNav/models"
+
+      - name: install vulkan loader (software rasterizer for headless runner)
+        if: env.SKIP != '1' && matrix.backend == 'vulkan'
+        run: |
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+
+      - name: cargo test ggml + runtime + stitched
+        if: env.SKIP != '1'
+        run: |
+          # pack.sh lays out bin/libllama.so + include/, so LIBLLAMA_DIR
+          # points at the bin subdir where the loader finds the .so.
+          export INTELNAV_LIBLLAMA_DIR="$HOME/.cache/intelnav/libllama/bin"
+          # `--lib --tests` skips the pre-existing example rot
+          # (`smoke_load`, `probe` still call candle-era Hidden APIs).
+          # Path B + bit_identical tests all live under `tests/`.
+          cargo test --no-fail-fast --lib --tests \
+            -p intelnav-ggml \
+            -p intelnav-runtime \
+            -- --test-threads=1
+
+  # ---------------------------------------------------------------------
+  # GPU integration, parameterized on self-hosted runners. Add runners
+  # tagged [self-hosted, gpu, <vendor>] and the matching matrix entry
+  # here picks them up. No-op when the runners don't exist.
+  # ---------------------------------------------------------------------
+  integration-gpu:
+    name: integration (${{ matrix.backend }}, self-hosted)
+    needs: check
+    # Only run on explicit workflow_dispatch with run_gpu_matrix=true.
+    # Push / PR runs skip entirely — without self-hosted runners
+    # registered, the jobs would otherwise sit queued forever.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_gpu_matrix }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    # Same skip-on-missing-artifact flow as `integration` above;
+    # jobs stay queued only when the labeled runner is actually online.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: rocm
+            pattern: libllama-linux-x64-rocm-*.tar.gz
+            runs_on: [self-hosted, gpu, amd]
+          - backend: cuda
+            pattern: libllama-linux-x64-cuda-*.tar.gz
+            runs_on: [self-hosted, gpu, nvidia]
+          - backend: metal
+            pattern: libllama-macos-arm64-metal-*.tar.gz
+            runs_on: [self-hosted, macos, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download libllama artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATTERN: ${{ matrix.pattern }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/intelnav/libllama"
+          if ! gh release download --repo IntelNav/llama.cpp \
+                --pattern "$PATTERN" --dir /tmp 2>&1; then
+            echo "::warning::no libllama release matching $PATTERN"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Exactly one tarball will match the pattern — extract it.
+          tar xzf /tmp/*.tar.gz -C "$HOME/.cache/intelnav/libllama" --strip-components=1
+
+      - name: cargo test with GPU backend
+        if: env.SKIP != '1'
+        shell: bash
+        env:
+          INTELNAV_TEST_NGL: "-1"  # offload all layers to GPU
+          # ROCm quirk: the published linux-x64-rocm tarball targets
+          # `AMDGPU_TARGETS=gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100`.
+          # Cards like the RX 6600 report gfx1032, which is binary-
+          # compatible with gfx1030 at runtime when this override is
+          # set. Harmless on non-ROCm runners (ignored). If we add
+          # gfx1032 to AMDGPU_TARGETS in the release matrix this line
+          # becomes redundant but not wrong.
+          HSA_OVERRIDE_GFX_VERSION: "10.3.0"
+        run: |
+          export INTELNAV_LIBLLAMA_DIR="$HOME/.cache/intelnav/libllama/bin"
+          cargo test --no-fail-fast --lib --tests \
+            -p intelnav-ggml \
+            -- --test-threads=1
+
+  provision:
+    name: provision.sh (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: run scripts/provision.sh --yes --skip-check
+        run: bash scripts/provision.sh --yes --skip-check

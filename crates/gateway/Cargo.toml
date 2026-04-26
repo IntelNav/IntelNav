@@ -1,0 +1,30 @@
+[package]
+name        = "intelnav-gateway"
+description = "OpenAI-compatible HTTP gateway — paper §10."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+intelnav-core   = { workspace = true }
+intelnav-crypto = { workspace = true }
+intelnav-net    = { workspace = true }
+intelnav-wire   = { workspace = true }
+
+tokio         = { workspace = true }
+futures       = { workspace = true }
+futures-util  = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+bytes         = { workspace = true }
+
+axum          = { workspace = true }
+tower         = { workspace = true }
+tower-http    = { workspace = true }
+reqwest       = { workspace = true }
+async-trait   = { workspace = true }
+async-stream  = { workspace = true }
