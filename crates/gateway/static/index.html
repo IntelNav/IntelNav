@@ -457,6 +457,11 @@ const state = {
   lastTopoAt: 0,
   /// rolling 60-sample series for the traffic sparkline
   traffic:    new Array(60).fill(0),
+  /// per-peer activity heat (decays each tick) — keyed by peer_id.
+  /// Values 0..1; renderer brightens edges/nodes proportionally.
+  heat:       Object.create(null),
+  /// last seen seq number from /v1/swarm/events.
+  lastSeq:    null,
 };
 
 // ----------------------------------------------------------------------
@@ -610,31 +615,44 @@ function drawChain(t) {
   }
 
   // nodes
-  drawNode(svg, margin, y, 'gateway', 'embed', 'var(--gateway)', state.streaming, 'gateway');
+  drawNode(svg, margin, y, 'gateway', 'embed', 'var(--gateway)', state.streaming, 'gateway', 0);
   for (let i = 0; i < peers.length; i++) {
     const p = peers[i];
     const x = margin + (i + 1) * dx;
     const color = p.kind === 'cloud' ? 'var(--cloud)' : 'var(--volunteer)';
     const subtitle = p.layers ? p.layers : '';
-    drawNode(svg, x, y, p.kind, p.id, color, state.streaming, subtitle);
+    const heat = state.heat[p.id] || 0;
+    drawNode(svg, x, y, p.kind, p.id, color, state.streaming || heat > 0.1, subtitle, heat);
   }
-  drawNode(svg, margin + (N - 1) * dx, y, 'gateway', 'head', 'var(--gateway)', state.streaming, 'sample');
+  drawNode(svg, margin + (N - 1) * dx, y, 'gateway', 'head', 'var(--gateway)', state.streaming, 'sample', 0);
 
   if (t.peers.length > peers.length) {
     drawText(svg, W / 2, H - 12, '+' + (t.peers.length - peers.length) + ' more peers', 'var(--inactive)');
   }
 }
 
-function drawNode(svg, x, y, kind, label, color, pulse, subtitle) {
+function drawNode(svg, x, y, kind, label, color, pulse, subtitle, heat = 0) {
   const ns = 'http://www.w3.org/2000/svg';
   const g  = document.createElementNS(ns, 'g');
   const r  = kind === 'gateway' ? 14 : 18;
+
+  // Glow halo proportional to per-peer activity heat (0..1). Stays
+  // 0 when the peer is idle; brightens momentarily on each event.
+  if (heat > 0.05) {
+    const halo = document.createElementNS(ns, 'circle');
+    halo.setAttribute('cx', x); halo.setAttribute('cy', y);
+    halo.setAttribute('r', r + 6 + heat * 8);
+    halo.setAttribute('fill', color);
+    halo.setAttribute('opacity', String(0.18 + 0.32 * heat));
+    g.appendChild(halo);
+  }
+
   const c  = document.createElementNS(ns, 'circle');
   c.setAttribute('cx', x); c.setAttribute('cy', y);
   c.setAttribute('r', r);
   c.setAttribute('fill', '#15171b');
   c.setAttribute('stroke', color);
-  c.setAttribute('stroke-width', '2');
+  c.setAttribute('stroke-width', String(2 + heat * 1.5));
   if (pulse) {
     const a = document.createElementNS(ns, 'animate');
     a.setAttribute('attributeName', 'r');
@@ -885,11 +903,54 @@ function escapeHtml(s) {
 }
 
 // ----------------------------------------------------------------------
+//  /v1/swarm/events SSE — light up edges in real time
+// ----------------------------------------------------------------------
+function connectEvents() {
+  const es = new EventSource('/v1/swarm/events');
+  es.addEventListener('step', e => {
+    let ev;
+    try { ev = JSON.parse(e.data); } catch { return; }
+    state.lastSeq = ev.seq;
+    // Push activity heat onto the matching peer.
+    state.heat[ev.peer_id] = 1.0;
+    // Bump traffic by what this hop carried — 1500ms polling
+    // smooths the visual but per-event nudges keep it lively.
+    const carry = (ev.bytes_up + ev.bytes_down) / 2;
+    state.traffic[state.traffic.length - 1] += carry;
+    drawTraffic();
+    drawChain(state.topology || { peers: [] });
+  });
+  es.addEventListener('lag', _ => {
+    // Subscriber lagged past the channel capacity. Just resync —
+    // we don't replay, the next event continues live.
+  });
+  es.onerror = () => {
+    // Browser auto-reconnects; nothing to do.
+  };
+}
+
+// Decay activity heat each tick so edges fade if the swarm goes idle.
+function tickHeat() {
+  let any = false;
+  for (const k of Object.keys(state.heat)) {
+    state.heat[k] *= 0.78;
+    if (state.heat[k] < 0.02) {
+      delete state.heat[k];
+    } else {
+      any = true;
+    }
+  }
+  if (any) drawChain(state.topology || { peers: [] });
+}
+
+// ----------------------------------------------------------------------
 //  boot
 // ----------------------------------------------------------------------
 pollTopology();
+connectEvents();
 setInterval(pollTopology, 1500);
 setInterval(refreshTopologyAge, 1000);
+setInterval(tickHeat, 220);
 </script>
 </body>
 </html>

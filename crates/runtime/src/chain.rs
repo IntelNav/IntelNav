@@ -27,6 +27,7 @@ use tokio::time::timeout;
 use crate::generate::SamplingCfg;
 use crate::model::ModelHandle;
 use crate::sample::{Sampler, SamplerCfg};
+use crate::telemetry::{StepEvent, StepPhase, Telemetry};
 use crate::tokenizer::Tok;
 
 /// Per-peer link state. One TCP connection, one session, one inbound
@@ -122,6 +123,11 @@ pub struct Chain {
     cfg:        ChainCfg,
     links:      Vec<Link>,
     front_end:  u16,
+    /// Optional broadcast handle for live demos. When set, every peer
+    /// hop in [`Chain::step_with_truncate`] emits a `StepEvent` with
+    /// timing + byte counts. Subscribers (the gateway's
+    /// `/v1/swarm/events` SSE) see hops in real time.
+    telemetry:  Option<Telemetry>,
 }
 
 impl Chain {
@@ -129,6 +135,12 @@ impl Chain {
 
     /// How many peers we're fronting.
     pub fn peer_count(&self) -> usize { self.links.len() }
+
+    /// Attach a telemetry handle so subsequent steps publish hop
+    /// events. Idempotent — replaces any previously attached handle.
+    pub fn attach_telemetry(&mut self, telemetry: Telemetry) {
+        self.telemetry = Some(telemetry);
+    }
 
     /// Connect + handshake + open a session on every peer. Fails fast on
     /// the first peer that can't open — no partial state retained.
@@ -234,7 +246,7 @@ impl Chain {
 
         let front_end = cfg.splits[0];
         let _ = n_blocks;
-        Ok(Self { cfg, links, front_end })
+        Ok(Self { cfg, links, front_end, telemetry: None })
     }
 
     /// Run one forward step: push the front hidden through each peer in
@@ -258,7 +270,12 @@ impl Chain {
         keep:         Option<u32>,
     ) -> std::result::Result<Hidden, ChainError> {
         let mut cur = front_hidden;
+        let step_phase = match phase {
+            Phase::Prefill => StepPhase::Prefill,
+            Phase::Decode  => StepPhase::Decode,
+        };
         for i in 0..self.links.len() {
+            let hop_started = std::time::Instant::now();
             let link = &mut self.links[i];
             link.seq += 1;
             let seq = link.seq;
@@ -277,6 +294,8 @@ impl Chain {
             let wire_shape = [exp_b as u32, exp_s as u32, exp_h as u32];
             let p = encode_hidden_with(&cur.data, wire_shape, self.cfg.wire_dtype)
                 .map_err(ChainError::from)?;
+            // Captured here because `p.bytes` is moved into the Msg below.
+            let bytes_up = p.bytes.len() as u64;
 
             let req = Msg::ForwardHidden {
                 session_id: session,
@@ -330,10 +349,31 @@ impl Chain {
                     ),
                 });
             }
+            let bytes_down = out_data.len() as u64
+                * std::mem::size_of::<f32>() as u64;
             cur = Hidden::new(
                 out_data,
                 vec![out_shape[0] as usize, out_shape[1] as usize, out_shape[2] as usize],
             ).map_err(ChainError::from)?;
+
+            // Publish the per-hop event. Cheap when no subscribers
+            // (broadcast::send is a no-op without receivers).
+            if let Some(t) = &self.telemetry {
+                if t.has_subscribers() {
+                    let rtt_ms = hop_started.elapsed().as_secs_f32() * 1000.0;
+                    t.emit(StepEvent {
+                        seq:        0,                 // assigned by Telemetry::emit
+                        at_ms:      0,                 // assigned by Telemetry::emit
+                        peer_index: i,
+                        peer_id:    short_peer_label(&addr),
+                        phase:      step_phase,
+                        rtt_ms,
+                        bytes_up,
+                        bytes_down,
+                        synthetic:  false,
+                    });
+                }
+            }
         }
         Ok(cur)
     }
@@ -497,6 +537,20 @@ pub async fn run_turn<F: FnMut(&str) -> Result<()>>(
     }
 
     Ok(n_gen)
+}
+
+/// Render a `SocketAddr` as the same bs58-short id the gateway's
+/// static directory would assign for `host:port`. Lets telemetry
+/// events match peer-card ids in the SPA without a lookup.
+fn short_peer_label(addr: &SocketAddr) -> String {
+    let s = addr.to_string();
+    let h = blake3::hash(s.as_bytes());
+    let b58 = bs58::encode(h.as_bytes()).into_string();
+    let mut out = String::with_capacity(14);
+    out.push_str(&b58[..6]);
+    out.push('…');
+    out.push_str(&b58[b58.len() - 6..]);
+    out
 }
 
 #[cfg(test)]

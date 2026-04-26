@@ -1853,6 +1853,7 @@ dependencies = [
  "async-trait",
  "axum",
  "blake3",
+ "bs58",
  "bytes",
  "futures",
  "futures-util",
@@ -1860,6 +1861,7 @@ dependencies = [
  "intelnav-core",
  "intelnav-crypto",
  "intelnav-net",
+ "intelnav-runtime",
  "intelnav-wire",
  "reqwest",
  "serde",
@@ -1966,6 +1968,8 @@ name = "intelnav-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "bs58",
  "bytes",
  "clap",
  "half",

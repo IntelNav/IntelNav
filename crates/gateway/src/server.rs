@@ -13,6 +13,7 @@ use std::time::Duration;
 use intelnav_core::types::{Backend, CapabilityV1, Quant, Role, ShardRoute};
 use intelnav_core::{Config, ModelId, PeerId, Result};
 use intelnav_net::{DhtDirectory, MdnsDirectory, PeerRecord, RegistryDirectory, StaticDirectory};
+use intelnav_runtime::{StepEvent, StepPhase, Telemetry};
 
 use crate::api;
 use crate::state::GatewayState;
@@ -28,10 +29,64 @@ pub fn router(state: GatewayState) -> Router {
         .route("/v1/network/peers",     get(api::peers))
         .route("/v1/network/health",    get(api::health))
         .route("/v1/swarm/topology",    get(api::swarm_topology))
+        .route("/v1/swarm/events",      get(api::swarm_events))
         .route("/v1/chat/completions",  post(api::chat_completions))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Background task: when no real chain is publishing telemetry events
+/// yet, emit a synthetic step every ~1.5s so `/v1/swarm/events` SSE
+/// always has something to push to the SPA. Each event is flagged
+/// `synthetic: true` so the UI can dim it visually.
+///
+/// Drops out automatically once the gateway-driven chain (arc 6
+/// sub-D) starts emitting real events at a faster cadence — synth
+/// is interleaved, not exclusive, so callers don't have to flip a
+/// switch.
+fn spawn_synth_heartbeat(telemetry: Telemetry, peer_addrs: Vec<String>) {
+    if peer_addrs.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(1500));
+        let mut hop: usize = 0;
+        loop {
+            tick.tick().await;
+            if !telemetry.has_subscribers() {
+                continue;
+            }
+            let i = hop % peer_addrs.len();
+            hop = hop.wrapping_add(1);
+            let addr = &peer_addrs[i];
+            // Same id derivation the gateway uses so the SPA can match
+            // events back to topology cards. Mirrors short_peer_label
+            // in intelnav_runtime::chain.
+            let id = {
+                let h = blake3::hash(addr.as_bytes());
+                let s = bs58::encode(h.as_bytes()).into_string();
+                let mut out = String::with_capacity(14);
+                out.push_str(&s[..6]);
+                out.push('…');
+                out.push_str(&s[s.len() - 6..]);
+                out
+            };
+            // Per-hop synth values — gentle drift, LAN-ish ranges.
+            let drift = ((hop as f32) * 0.7).sin() * 0.5 + 0.5;
+            telemetry.emit(StepEvent {
+                seq:        0,                       // assigned by Telemetry
+                at_ms:      0,
+                peer_index: i,
+                peer_id:    id,
+                phase:      StepPhase::Heartbeat,
+                rtt_ms:     3.5 + drift * 4.0,
+                bytes_up:   (180_000.0 * (0.7 + 0.4 * drift)) as u64,
+                bytes_down: (165_000.0 * (0.7 + 0.4 * drift)) as u64,
+                synthetic:  true,
+            });
+        }
+    });
 }
 
 /// Seed the static directory from `config.peers` + `config.splits`.
@@ -133,6 +188,9 @@ pub async fn run(config: Config, enable_mdns: bool) -> Result<()> {
     let static_dir = Arc::new(StaticDirectory::new());
     seed_static_directory(&static_dir, &config);
 
+    let telemetry = Telemetry::default();
+    spawn_synth_heartbeat(telemetry.clone(), config.peers.clone());
+
     let state = GatewayState {
         config:     Arc::new(config.clone()),
         http,
@@ -151,6 +209,7 @@ pub async fn run(config: Config, enable_mdns: bool) -> Result<()> {
         },
         registry_dir,
         started_at: std::time::Instant::now(),
+        telemetry,
     };
 
     let addr: SocketAddr = config

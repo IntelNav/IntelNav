@@ -7,13 +7,15 @@ rust-version.workspace = true
 license.workspace     = true
 
 [dependencies]
-intelnav-core   = { workspace = true }
-intelnav-crypto = { workspace = true }
-intelnav-net    = { workspace = true }
-intelnav-wire   = { workspace = true }
+intelnav-core    = { workspace = true }
+intelnav-crypto  = { workspace = true }
+intelnav-net     = { workspace = true }
+intelnav-wire    = { workspace = true }
+intelnav-runtime = { workspace = true }
 
 tokio         = { workspace = true }
 blake3        = { workspace = true }
+bs58          = { workspace = true }
 futures       = { workspace = true }
 futures-util  = { workspace = true }
 serde         = { workspace = true }

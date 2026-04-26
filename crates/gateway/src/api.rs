@@ -402,6 +402,39 @@ fn synth_node_metrics(id: &str, uptime: u64, kind: &str) -> NodeMetrics {
 }
 
 // ----------------------------------------------------------------------
+//  /v1/swarm/events — live SSE stream of chain step events
+// ----------------------------------------------------------------------
+
+/// Subscribe to the gateway's [`Telemetry`] broadcast and forward
+/// each [`StepEvent`] as a JSON SSE frame. Browsers consume this via
+/// `new EventSource('/v1/swarm/events')`. The stream stays open as
+/// long as the connection is held; lagged subscribers get a
+/// `Lagged(n)` notification (which the relay turns into an
+/// `event: lag` frame so the client can resync if it cares).
+pub async fn swarm_events(
+    State(s): State<GatewayState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let mut rx = s.telemetry.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let payload = serde_json::to_string(&ev).unwrap_or_default();
+                    yield Ok(Event::default().event("step").data(payload));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    yield Ok(Event::default()
+                        .event("lag")
+                        .data(format!("{{\"missed\":{n}}}")));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+// ----------------------------------------------------------------------
 //  / — single-file demo SPA (chat + swarm topology)
 // ----------------------------------------------------------------------
 

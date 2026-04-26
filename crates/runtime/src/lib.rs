@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod probe;
 pub mod sample;
 pub mod spec;
+pub mod telemetry;
 pub mod tokenizer;
 
 pub use chain::{
@@ -37,4 +38,5 @@ pub use pipeline::{Forwarding, Pipelined};
 pub use probe::Probe;
 pub use sample::{Sampler, SamplerCfg};
 pub use spec::{run_turn_spec, SpecCfg};
+pub use telemetry::{StepEvent, StepPhase, Telemetry};
 pub use tokenizer::Tok;

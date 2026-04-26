@@ -23,6 +23,8 @@ half      = { workspace = true }
 tokio     = { workspace = true }
 bytes     = { workspace = true }
 rand      = { workspace = true }
+blake3    = { workspace = true }
+bs58      = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
