@@ -1852,6 +1852,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "blake3",
  "bytes",
  "futures",
  "futures-util",

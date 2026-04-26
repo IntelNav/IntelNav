@@ -13,6 +13,7 @@ intelnav-net    = { workspace = true }
 intelnav-wire   = { workspace = true }
 
 tokio         = { workspace = true }
+blake3        = { workspace = true }
 futures       = { workspace = true }
 futures-util  = { workspace = true }
 serde         = { workspace = true }

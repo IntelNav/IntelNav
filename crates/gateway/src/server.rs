@@ -10,8 +10,9 @@ use tower_http::trace::TraceLayer;
 
 use std::time::Duration;
 
-use intelnav_core::{Config, ModelId, Result};
-use intelnav_net::{DhtDirectory, MdnsDirectory, RegistryDirectory, StaticDirectory};
+use intelnav_core::types::{Backend, CapabilityV1, Quant, Role, ShardRoute};
+use intelnav_core::{Config, ModelId, PeerId, Result};
+use intelnav_net::{DhtDirectory, MdnsDirectory, PeerRecord, RegistryDirectory, StaticDirectory};
 
 use crate::api;
 use crate::state::GatewayState;
@@ -31,6 +32,79 @@ pub fn router(state: GatewayState) -> Router {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Seed the static directory from `config.peers` + `config.splits`.
+///
+/// Each entry in `config.peers` (e.g. `"127.0.0.1:7717"`) becomes one
+/// `PeerRecord` with a deterministic [`PeerId`] derived from the
+/// address (so the same peer keeps the same id across restarts) and
+/// a `ShardRoute` covering the layer range that peer owns. The split
+/// list `[s1, s2, …]` against N peers maps to ranges
+/// `[0..s1) [s1..s2) … [s_{N-1}..u16::MAX)` — `u16::MAX` is the open
+/// "tail" sentinel until we know the model's actual block count;
+/// the chain driver clamps it to the real layer count when it
+/// connects.
+///
+/// Demo-friendly: even without a registry / mDNS / DHT, an operator
+/// can spin up three local `pipe_peer`s, point the gateway at them
+/// in `config.peers`, and the SPA's `/v1/swarm/topology` lights up
+/// immediately.
+fn seed_static_directory(dir: &StaticDirectory, config: &Config) {
+    if config.peers.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Build peer ranges from the splits list. With 3 peers + splits
+    // [a,b], the ranges are [0..a) [a..b) [b..MAX).
+    let n = config.peers.len();
+    let mut ranges: Vec<(u16, u16)> = Vec::with_capacity(n);
+    let mut prev: u16 = 0;
+    for i in 0..n {
+        let end = config.splits.get(i).copied().unwrap_or(u16::MAX);
+        ranges.push((prev, end));
+        prev = end;
+    }
+
+    let model_cid = config.registry_model.clone()
+        .or_else(|| Some(config.default_model.clone()))
+        .unwrap_or_else(|| "default".to_string());
+
+    for (i, addr) in config.peers.iter().enumerate() {
+        let (start, end) = ranges[i];
+        let peer_id = peer_id_from_addr(addr);
+        let shard = ShardRoute { cid: model_cid.clone(), start, end };
+        let cap = CapabilityV1 {
+            peer_id,
+            backend:     Backend::LlamaCpp,
+            quants:      vec![Quant::Q4KM],
+            vram_bytes:  0,
+            ram_bytes:   0,
+            tok_per_sec: 0.0,
+            max_seq:     2048,
+            models:      vec![ModelId::new(model_cid.clone())],
+            layers:      vec![shard],
+            role:        Role::Volunteer,
+        };
+        dir.insert(PeerRecord {
+            peer_id,
+            addrs:      vec![addr.clone()],
+            capability: cap,
+            last_seen:  now,
+        });
+    }
+}
+
+/// Deterministic [`PeerId`] for a `host:port` string. Same address
+/// produces the same id every run — the SPA can rely on a stable
+/// short id when rendering. blake3 of the bytes; truncated to 32B.
+fn peer_id_from_addr(addr: &str) -> PeerId {
+    let h = blake3::hash(addr.as_bytes());
+    PeerId::new(*h.as_bytes())
 }
 
 /// Start the gateway and block until cancelled.
@@ -56,10 +130,13 @@ pub async fn run(config: Config, enable_mdns: bool) -> Result<()> {
         _ => None,
     };
 
+    let static_dir = Arc::new(StaticDirectory::new());
+    seed_static_directory(&static_dir, &config);
+
     let state = GatewayState {
         config:     Arc::new(config.clone()),
         http,
-        static_dir: Arc::new(StaticDirectory::new()),
+        static_dir,
         dht_dir:    Arc::new(DhtDirectory::new()),
         mdns_dir:   if enable_mdns {
             match MdnsDirectory::spawn(None) {
