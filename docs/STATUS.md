@@ -18,8 +18,8 @@ Milestone reference: [`paper/paper.pdf`](../../paper/paper.pdf) §12.3.
 
 | Milestone | Paper target | Actual | Notes |
 | --------- | ------------ | ------ | ----- |
-| **M0** — single-engine cross-device runtime (ggml-backed `Pipelined`, bit-identical chain test green, ROCm bench on RX 6600) | — | **not started** | Added 2026-04-22. Gates meaningful progress on GPU-dependent M1/M3 items. |
-| **M1** — 7B two-LAN-peer TCP pipeline, wire format, speculative decoding ≥60% | week 4  | **partial** | All subsystems in place; GPU spec-dec measurement blocked on M0 (candle has no ROCm/Vulkan/SYCL backend). |
+| **M0** — single-engine cross-device runtime (ggml-backed `Pipelined`, bit-identical chain test green, ROCm bench on RX 6600) | — | **done** | Closed 2026-04-23 (`8888b8b`). Two-host LAN smoke at 47.98 tok/s on the 22/2 split (`a893ae4`). |
+| **M1** — 7B two-LAN-peer TCP pipeline, wire format, speculative decoding ≥60% | week 4  | **partial** | All subsystems in place; spec-dec GPU measurement now unblocked (M0 closed) — just needs running on the RX 6600. |
 | **M2** — libp2p + Noise + DHT, tiered chain builder, WAN pipeline              | week 8  | **not started** | `DhtDirectory` is an in-memory stub. |
 | **M3** — continuous batching, t-of-n quorum, HTTP registry, 33B E2E            | week 12 | **partial** | Registry landed early; batching/quorum pending; 33B E2E gated on M0. |
 | **M4** — OpenAI gateway, commit-reveal, IPFS, installer, testnet               | week 16 | **partial** | Gateway skeleton done; rest pending. |
@@ -75,8 +75,8 @@ Milestone reference: [`paper/paper.pdf`](../../paper/paper.pdf) §12.3.
 - Rationale: [`dev/RUNTIME_DECISION.md`](dev/RUNTIME_DECISION.md).
 
 **M1 leftovers**
-- [ ] Baseline latency/throughput measurements. Harness exists (`bench_chain`); cross-host numbers not yet captured.
-- [ ] Speculative decoding speedup measurement on GPU. Algorithm verified on CPU; **blocked on M0** — candle has no ROCm/Vulkan/SYCL backend so the developer's RX 6600 can't run the pipeline at GPU speed.
+- [~] Baseline latency/throughput measurements. Harness exists (`bench_chain`); two-host LAN captured at 47.98 tok/s (`a893ae4`); cross-WAN numbers pending `WAN_OPT_PLAN.md` W0–W2.
+- [ ] Speculative decoding speedup measurement on GPU. Algorithm verified on CPU; M0 closed so the RX 6600 can run the pipeline at GPU speed — measurement just needs running.
 
 **M2 — P2P substrate**
 - [ ] libp2p + Noise XX.
