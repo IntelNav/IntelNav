@@ -381,7 +381,7 @@
 
   .speed-row {
     display: grid;
-    grid-template-columns: 70px 1fr 90px;
+    grid-template-columns: 70px 1fr 90px auto;
     gap: 10px;
     align-items: center;
     background: var(--panel-hi);
@@ -390,6 +390,30 @@
     padding: 10px 12px;
     margin-bottom: 10px;
   }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .seg button {
+    background: transparent;
+    color: var(--subtle);
+    border: none;
+    padding: 4px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button:hover  { color: var(--text); }
+  .seg button.active {
+    background: var(--network);
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .seg button:disabled { opacity: 0.4; cursor: default; }
   .speed-row label {
     font-family: var(--mono);
     font-size: 12px;
@@ -548,6 +572,10 @@
           <label>speed</label>
           <input type="range" id="speed-slider" min="1" max="4" step="0.01" value="2.7">
           <span class="val" id="speed-val">— Mbps</span>
+          <div class="seg" id="dtype-seg" title="hidden-state wire dtype — int8 halves bytes/step">
+            <button type="button" data-dtype="fp16" class="active">fp16</button>
+            <button type="button" data-dtype="int8">int8</button>
+          </div>
         </div>
         <div class="links" id="links">
           <div class="empty">netsim disabled — start with <code>scripts/demo.sh</code> (default) to enable.</div>
@@ -1226,6 +1254,41 @@ function onSpeedSlider() {
   speedDebounce = setTimeout(applyProfileToAll, 80);
 }
 
+// ----------------------------------------------------------------------
+//  /v1/chain/config + wire-dtype toggle
+// ----------------------------------------------------------------------
+
+async function pollChainConfig() {
+  try {
+    const r = await fetch('/v1/chain/config', { cache: 'no-store' });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    const seg = document.getElementById('dtype-seg');
+    for (const btn of seg.querySelectorAll('button')) {
+      btn.classList.toggle('active', btn.dataset.dtype === cfg.wire_dtype);
+      btn.disabled = !cfg.active;
+    }
+  } catch { /* ignore */ }
+}
+
+async function setWireDtype(dtype) {
+  try {
+    await fetch('/v1/chain/wire-dtype', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({ wire_dtype: dtype }),
+    });
+  } catch {}
+  pollChainConfig();
+}
+
+function bindDtypeSeg() {
+  const seg = document.getElementById('dtype-seg');
+  for (const btn of seg.querySelectorAll('button')) {
+    btn.addEventListener('click', () => setWireDtype(btn.dataset.dtype));
+  }
+}
+
 async function applyProfileToAll() {
   if (!netState.linkCount) return;
   const reqs = [];
@@ -1346,12 +1409,15 @@ function tickHeat() {
 // ----------------------------------------------------------------------
 pollTopology();
 pollLinks();
+pollChainConfig();
 renderProfileRow();
 syncSpeedSlider();
+bindDtypeSeg();
 document.getElementById('speed-slider').addEventListener('input', onSpeedSlider);
 connectEvents();
 setInterval(pollTopology, 1500);
 setInterval(pollLinks, 1500);
+setInterval(pollChainConfig, 3000);
 setInterval(refreshTopologyAge, 1000);
 setInterval(tickHeat, 220);
 </script>

@@ -20,7 +20,7 @@
 //! mutex — multi-tenant continuous batching is M3 work.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -54,7 +54,10 @@ pub struct GatewayDriver {
     model:      Arc<Mutex<ModelHandle>>,
     tok:        Arc<Tok>,
     kind:       ModelKind,
-    chain_cfg:  ChainCfg,
+    /// Wrapped in [`RwLock`] so the SPA can flip wire-dtype (and any
+    /// future per-chain knob) live — the next turn picks the new
+    /// config off the lock.
+    chain_cfg:  Arc<RwLock<ChainCfg>>,
     telemetry:  Telemetry,
 }
 
@@ -132,9 +135,25 @@ impl GatewayDriver {
             model:     Arc::new(Mutex::new(model)),
             tok:       Arc::new(tok),
             kind,
-            chain_cfg: cfg,
+            chain_cfg: Arc::new(RwLock::new(cfg)),
             telemetry,
         })
+    }
+
+    /// Live-mutate the wire dtype. Takes effect on the next chat turn
+    /// — the current turn's `Chain` already has its dtype baked in.
+    pub fn set_wire_dtype(&self, dtype: Dtype) {
+        if let Ok(mut g) = self.chain_cfg.write() {
+            g.wire_dtype = dtype;
+        }
+    }
+
+    /// Read-only snapshot of current chain config (small, cheap to
+    /// clone). Used by the gateway's `/v1/chain/config` endpoint.
+    pub fn chain_config(&self) -> ChainCfg {
+        self.chain_cfg.read()
+            .map(|c| c.clone())
+            .unwrap_or_else(|p| p.into_inner().clone())
     }
 
     /// Drive one chat turn through the chain. Returns an unbounded
@@ -195,7 +214,12 @@ impl GatewayDriver {
             .map_err(|_| anyhow!("model mutex poisoned"))?;
 
         let n_blocks = guard.block_count() as u16;
-        let mut chain = Chain::connect(self.chain_cfg.clone(), n_blocks).await
+        // Snapshot the chain config under the lock — once we're past
+        // here, mid-turn flips don't surprise this connection.
+        let cfg_snapshot = self.chain_cfg.read()
+            .map(|c| c.clone())
+            .unwrap_or_else(|p| p.into_inner().clone());
+        let mut chain = Chain::connect(cfg_snapshot, n_blocks).await
             .map_err(|e| anyhow!("chain connect: {e}"))?;
         chain.attach_telemetry(self.telemetry.clone());
 
@@ -219,13 +243,22 @@ impl GatewayDriver {
     }
 }
 
-/// Resolve `Config::wire_dtype` (defaults to `"fp16"`) into the wire
-/// enum. Unknown values fall back to fp16 silently — same policy
-/// the CLI's chain_driver uses.
-fn parse_wire_dtype(s: &str) -> Dtype {
+/// Resolve a string like `"int8"` / `"fp16"` into the wire enum.
+/// Unknown values fall back to fp16 silently — same policy the
+/// CLI's chain_driver uses.
+pub fn parse_wire_dtype(s: &str) -> Dtype {
     match s.trim().to_ascii_lowercase().as_str() {
         "int8" | "i8"  => Dtype::Int8,
         _              => Dtype::Fp16,
+    }
+}
+
+/// Inverse of [`parse_wire_dtype`] — used by `/v1/chain/config` so
+/// the SPA knows which button to highlight.
+pub fn wire_dtype_str(d: Dtype) -> &'static str {
+    match d {
+        Dtype::Int8 => "int8",
+        _           => "fp16",
     }
 }
 

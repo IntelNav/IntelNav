@@ -532,6 +532,48 @@ pub async fn patch_network_link(
 }
 
 // ----------------------------------------------------------------------
+//  /v1/chain/config — live-readable chain knobs (wire_dtype today)
+// ----------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ChainConfigView {
+    /// `"fp16"` or `"int8"`. Reflects what the gateway driver will
+    /// use for the *next* turn.
+    pub wire_dtype: &'static str,
+    /// True when a chain driver is loaded; false when the gateway is
+    /// running in upstream-proxy mode and the SPA's toggle should be
+    /// disabled.
+    pub active: bool,
+}
+
+pub async fn chain_config(State(s): State<GatewayState>) -> Json<ChainConfigView> {
+    let (wire, active) = match &s.driver {
+        Some(d) => (crate::driver::wire_dtype_str(d.chain_config().wire_dtype), true),
+        None    => ("fp16", false),
+    };
+    Json(ChainConfigView { wire_dtype: wire, active })
+}
+
+#[derive(Deserialize)]
+pub struct WireDtypePatch {
+    pub wire_dtype: String,
+}
+
+/// POST `/v1/chain/wire-dtype` — flips the gateway driver's wire
+/// dtype. Body: `{"wire_dtype": "int8"}`. Takes effect on the next
+/// chat turn (current connections keep their existing dtype). 404
+/// when no driver is loaded.
+pub async fn set_wire_dtype(
+    State(s):  State<GatewayState>,
+    Json(req): Json<WireDtypePatch>,
+) -> StatusCode {
+    let Some(d) = s.driver.as_ref() else { return StatusCode::NOT_FOUND };
+    let dt = crate::driver::parse_wire_dtype(&req.wire_dtype);
+    d.set_wire_dtype(dt);
+    StatusCode::NO_CONTENT
+}
+
+// ----------------------------------------------------------------------
 //  / — single-file demo SPA (chat + swarm topology)
 // ----------------------------------------------------------------------
 
