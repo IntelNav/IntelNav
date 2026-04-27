@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="IntelNav" width="640">
+  <img src="assets/banner.svg" alt="IntelNav" width="520">
 </p>
 
 <p align="center">
