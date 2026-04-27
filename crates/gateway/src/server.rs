@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -32,6 +32,8 @@ pub fn router(state: GatewayState) -> Router {
         .route("/v1/network/health",    get(api::health))
         .route("/v1/swarm/topology",    get(api::swarm_topology))
         .route("/v1/swarm/events",      get(api::swarm_events))
+        .route("/v1/network/links",       get(api::network_links))
+        .route("/v1/network/links/:idx", patch(api::patch_network_link))
         .route("/v1/chat/completions",  post(api::chat_completions))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

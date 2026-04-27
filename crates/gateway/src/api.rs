@@ -459,6 +459,79 @@ pub async fn swarm_events(
 }
 
 // ----------------------------------------------------------------------
+//  /v1/network/links — netsim aggregator + live tuning passthrough
+// ----------------------------------------------------------------------
+
+/// One entry in `/v1/network/links`. The `peer_addr` slot is what the
+/// gateway uses to talk to its peer (the netsim's listen address —
+/// the real peer port lives behind the shaper). `stats` is the raw
+/// JSON the netsim publishes; we don't re-shape it so the SPA's
+/// schema stays in lockstep with the netsim crate.
+#[derive(Serialize)]
+pub struct NetworkLink {
+    pub index:        usize,
+    pub peer_addr:    String,
+    pub control_url:  String,
+    /// `null` if the netsim's `/stats` call failed — the SPA shows
+    /// the row dimmed rather than dropping it, so an operator sees
+    /// "this shaper went away" instead of "the panel is empty."
+    pub stats:        Option<serde_json::Value>,
+}
+
+/// Snapshot of every netsim shaper the gateway knows about. Order
+/// matches `config.peers`.
+pub async fn network_links(State(s): State<GatewayState>) -> Json<Vec<NetworkLink>> {
+    let mut out = Vec::with_capacity(s.config.netsims.len());
+    for (i, ctrl) in s.config.netsims.iter().enumerate() {
+        let url = format!("http://{ctrl}/stats");
+        let stats = match s.http.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
+            _ => None,
+        };
+        let peer_addr = s.config.peers.get(i).cloned().unwrap_or_default();
+        out.push(NetworkLink {
+            index: i,
+            peer_addr,
+            control_url: format!("http://{ctrl}"),
+            stats,
+        });
+    }
+    Json(out)
+}
+
+/// PATCH `/v1/network/links/:idx` — body is forwarded straight to the
+/// matching netsim's `PATCH /config`. Same body shape as
+/// `intelnav-netsim` accepts: `{"forward": {...}, "reverse": {...},
+/// "label": "..."}`. We don't validate the contents — the netsim
+/// owns the schema, the gateway is just a CORS-friendly proxy so the
+/// SPA can hit shapers running on a separate port.
+pub async fn patch_network_link(
+    State(s): State<GatewayState>,
+    axum::extract::Path(idx): axum::extract::Path<usize>,
+    body: axum::body::Bytes,
+) -> StatusCode {
+    let Some(ctrl) = s.config.netsims.get(idx) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let url = format!("http://{ctrl}/config");
+    match s.http.patch(&url)
+        .header("content-type", "application/json")
+        .body(body)
+        .send().await
+    {
+        Ok(r) if r.status().is_success() => StatusCode::NO_CONTENT,
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), %url, "netsim rejected patch");
+            StatusCode::BAD_GATEWAY
+        }
+        Err(e) => {
+            tracing::warn!(?e, %url, "netsim unreachable");
+            StatusCode::BAD_GATEWAY
+        }
+    }
+}
+
+// ----------------------------------------------------------------------
 //  / — single-file demo SPA (chat + swarm topology)
 // ----------------------------------------------------------------------
 

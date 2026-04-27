@@ -25,9 +25,27 @@ N_LAYERS="${N_LAYERS:-24}"      # Qwen2.5-0.5B has 24 transformer blocks.
 # [0..splits[0]) locally (embed + first slice + head); each peer i
 # owns [splits[i]..splits[i+1]), and the tail peer owns
 # [splits[N-1]..N_LAYERS). For Qwen2.5-0.5B (24 layers) the default
-# 6/12/18 puts ~6 layers on each side: gateway, peer-1, peer-2, peer-3.
-SPLITS="${SPLITS:-6,12,18}"
-PORTS=(7717 7718 7719)
+# 4/9/14/19 puts ~5 layers on each peer plus 4 on the gateway prefix.
+SPLITS="${SPLITS:-4,9,14,19}"
+# Real peer ports. Each peer is fronted by a netsim that listens on
+# NETSIM_PORTS[i] — the gateway only ever talks to those, never
+# directly to PORTS[i].
+PORTS=(7717 7718 7719 7720)
+NETSIM_PORTS=(7817 7818 7819 7820)
+NETSIM_CTRL_PORTS=(9117 9118 9119 9120)
+# Per-peer netsim tier. Each entry is a `label|forward|reverse` triple
+# the demo passes to intelnav-netsim. The forward leg is gateway →
+# peer; reverse is peer → gateway. Numbers loosely model:
+#   * peer-1: a fast LAN box on the same switch
+#   * peer-2: a metro-area volunteer 25 ms away
+#   * peer-3: a transcontinental WAN node
+#   * peer-4: same WAN distance but a flakier link with packet loss
+NETSIM_TIERS=(
+    "LAN|delay=2,jitter=0.5,bw=1000|delay=2,jitter=0.5,bw=1000"
+    "Metro|delay=22,jitter=4,bw=300|delay=22,jitter=4,bw=300"
+    "WAN|delay=72,jitter=10,bw=120|delay=72,jitter=10,bw=120"
+    "Lossy WAN|delay=110,jitter=18,bw=40,loss=0.01,reorder=0.005|delay=110,jitter=18,bw=40,loss=0.01,reorder=0.005"
+)
 GATEWAY_PORT="${GATEWAY_PORT:-8787}"
 LOG_DIR="${LOG_DIR:-$ROOT/target/demo-logs}"
 
@@ -35,12 +53,17 @@ LOG_DIR="${LOG_DIR:-$ROOT/target/demo-logs}"
 INTELNAV_BIN="${INTELNAV_BIN:-$ROOT/target/debug/intelnav}"
 PIPE_PEER_BIN="${PIPE_PEER_BIN:-$ROOT/target/debug/examples/pipe_peer}"
 CHUNK_BIN="${CHUNK_BIN:-$ROOT/target/debug/intelnav-chunk}"
+NETSIM_BIN="${NETSIM_BIN:-$ROOT/target/debug/intelnav-netsim}"
 
 # Path B (stitched-subset) is the default: each peer downloads + loads
 # only its layer slice, not the full GGUF. Set STITCHED=0 to fall back
 # to "every peer mmaps the full file" mode for debugging.
 STITCHED="${STITCHED:-1}"
 CHUNK_PORT="${CHUNK_PORT:-9099}"
+
+# Set NETSIM=0 to skip the shaper layer entirely (gateway talks
+# directly to peers). Useful when testing without simulated latency.
+NETSIM="${NETSIM:-1}"
 
 # ---------------------------------------------------------------------
 # Sanity checks — fail fast and tell the user what to fix.
@@ -54,13 +77,19 @@ die() { echo "demo: $*" >&2; exit 1; }
 if [[ "$STITCHED" == "1" ]]; then
     [[ -f "$CHUNK_BIN" ]] || die "intelnav-chunk not at $CHUNK_BIN (cargo build -p intelnav-model-store --features serve --bin intelnav-chunk)"
 fi
+if [[ "$NETSIM" == "1" ]]; then
+    [[ -f "$NETSIM_BIN" ]] || die "intelnav-netsim not at $NETSIM_BIN (cargo build -p intelnav-netsim)"
+    [[ "${#NETSIM_PORTS[@]}"      -eq "${#PORTS[@]}" ]] || die "NETSIM_PORTS length must match PORTS"
+    [[ "${#NETSIM_CTRL_PORTS[@]}" -eq "${#PORTS[@]}" ]] || die "NETSIM_CTRL_PORTS length must match PORTS"
+    [[ "${#NETSIM_TIERS[@]}"      -eq "${#PORTS[@]}" ]] || die "NETSIM_TIERS length must match PORTS"
+fi
 
 mkdir -p "$LOG_DIR"
 
 # Parse SPLITS (chain protocol convention: one entry per peer = that
-# peer's start layer). With SPLITS="6,12,18" and N_LAYERS=24 the
-# gateway owns [0..6) locally, peer-1 owns [6..12), peer-2 [12..18),
-# peer-3 [18..24).
+# peer's start layer). With SPLITS="4,9,14,19" and N_LAYERS=24 the
+# gateway owns [0..4) locally, peer-1 owns [4..9), peer-2 [9..14),
+# peer-3 [14..19), peer-4 [19..24).
 IFS=',' read -ra split_arr <<< "$SPLITS"
 peer_ranges=()
 for i in "${!split_arr[@]}"; do
@@ -137,6 +166,7 @@ echo "demo: libllama  = $LIBLLAMA_DIR"
 echo "demo: peers     = ${#PORTS[@]} on ports ${PORTS[*]}"
 echo "demo: gateway   = http://127.0.0.1:$GATEWAY_PORT"
 echo "demo: stitched  = $STITCHED"
+echo "demo: netsim    = $NETSIM (ports ${NETSIM_PORTS[*]})"
 echo "demo: logs      = $LOG_DIR"
 echo
 
@@ -174,6 +204,7 @@ fi
 # mode (the default) it fetches its bundles from the chunk-server and
 # only mmaps its own slice — Path B end-to-end.
 PEER_ADDRS=()
+NETSIM_CTRLS=()
 for i in "${!PORTS[@]}"; do
     port="${PORTS[$i]}"
     range="${peer_ranges[$i]}"
@@ -200,13 +231,38 @@ for i in "${!PORTS[@]}"; do
             --bind "127.0.0.1:$port" \
             --device cpu >/dev/null
     fi
-    PEER_ADDRS+=("127.0.0.1:$port")
     wait_for_port "$port" "$label"
     if [[ "$STITCHED" == "1" ]]; then
         slice_size="$(du -sh "$LOG_DIR/$label-cache" 2>/dev/null | cut -f1 || echo '?')"
         echo "demo:   $label ready · layers [$start..$end) · 127.0.0.1:$port · stitched · slice $slice_size"
     else
         echo "demo:   $label ready · layers [$start..$end) · 127.0.0.1:$port · full-gguf"
+    fi
+
+    # Front the peer with a netsim if enabled. The gateway will see
+    # only the netsim port; per-link delay/jitter/bandwidth/loss come
+    # from NETSIM_TIERS[$i] and can be re-tuned live via
+    # http://127.0.0.1:$ctrl_port/config.
+    if [[ "$NETSIM" == "1" ]]; then
+        ns_port="${NETSIM_PORTS[$i]}"
+        ns_ctrl="${NETSIM_CTRL_PORTS[$i]}"
+        IFS='|' read -r ns_label ns_fwd ns_rev <<< "${NETSIM_TIERS[$i]}"
+        ns_name="netsim-$((i+1))"
+        start_child "$ns_name" \
+            "$NETSIM_BIN" \
+            --bind     "127.0.0.1:$ns_port" \
+            --upstream "127.0.0.1:$port" \
+            --control  "127.0.0.1:$ns_ctrl" \
+            --label    "$ns_label" \
+            --forward  "$ns_fwd" \
+            --reverse  "$ns_rev" >/dev/null
+        wait_for_port "$ns_port" "$ns_name"
+        wait_for_port "$ns_ctrl" "$ns_name-ctrl"
+        echo "demo:   $ns_name ready · 127.0.0.1:$ns_port → 127.0.0.1:$port · $ns_label"
+        PEER_ADDRS+=("127.0.0.1:$ns_port")
+        NETSIM_CTRLS+=("127.0.0.1:$ns_ctrl")
+    else
+        PEER_ADDRS+=("127.0.0.1:$port")
     fi
 done
 echo
@@ -225,6 +281,10 @@ SPLITS_CSV="$SPLITS"
 export INTELNAV_PEERS="$PEERS_CSV"
 export INTELNAV_SPLITS="$SPLITS_CSV"
 export INTELNAV_GATEWAY_MODEL="$GGUF"
+if [[ "$NETSIM" == "1" ]]; then
+    NETSIM_CTRLS_CSV="$(IFS=,; echo "${NETSIM_CTRLS[*]}")"
+    export INTELNAV_NETSIMS="$NETSIM_CTRLS_CSV"
+fi
 
 start_child "gateway" \
     "$INTELNAV_BIN" gateway \

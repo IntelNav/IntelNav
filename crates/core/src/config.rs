@@ -131,6 +131,14 @@ pub struct Config {
     /// `INTELNAV_WIRE_DTYPE`.
     #[serde(default = "default_wire_dtype")]
     pub wire_dtype: String,
+
+    /// HTTP control endpoints for the per-peer netsim shapers, in the
+    /// same order as `peers`. Empty list = no shapers (gateway talks
+    /// directly to peers). Env: `INTELNAV_NETSIMS` (comma-sep, e.g.
+    /// `127.0.0.1:9117,127.0.0.1:9118`). The gateway uses these to
+    /// expose `/v1/network/links` (read) and live PATCHes (write).
+    #[serde(default)]
+    pub netsims: Vec<String>,
 }
 
 fn default_wire_dtype() -> String { "fp16".into() }
@@ -156,6 +164,7 @@ impl Default for Config {
             draft_model:   None,
             spec_k:        0,
             wire_dtype:    default_wire_dtype(),
+            netsims:       Vec::new(),
         }
     }
 }
@@ -237,6 +246,9 @@ impl Config {
         }
         if let Ok(v) = var("INTELNAV_WIRE_DTYPE") {
             if !v.is_empty() { self.wire_dtype = v; }
+        }
+        if let Ok(v) = var("INTELNAV_NETSIMS") {
+            self.netsims = v.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
         }
         if let Ok(v) = var("INTELNAV_TIER") {
             self.default_tier = match v.to_ascii_lowercase().as_str() {
