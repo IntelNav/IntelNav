@@ -1,0 +1,30 @@
+[package]
+name        = "intelnav-netsim"
+description = "User-space TCP shaper for IntelNav demos — RTT, jitter, bandwidth, loss, reorder, plus a live HTTP control plane."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[lib]
+name = "intelnav_netsim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "intelnav-netsim"
+path = "src/bin/intelnav_netsim.rs"
+
+[dependencies]
+tokio        = { workspace = true }
+futures      = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow       = { workspace = true }
+clap         = { workspace = true }
+rand         = { workspace = true }
+axum         = { workspace = true }
+tower        = { workspace = true }
+tower-http   = { workspace = true }
+bytes        = { workspace = true }

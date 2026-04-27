@@ -11,6 +11,7 @@ members = [
     "crates/runtime",
     "crates/ggml",
     "crates/model-store",
+    "crates/netsim",
 ]
 
 [workspace.package]
