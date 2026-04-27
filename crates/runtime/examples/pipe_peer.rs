@@ -26,6 +26,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -37,8 +38,72 @@ use tokio::net::{TcpListener, TcpStream};
 use intelnav_core::{PeerId, SessionId};
 use intelnav_core::types::Quant;
 use intelnav_ggml::{decode_hidden, encode_hidden_with, Hidden, HiddenPayload};
+use intelnav_runtime::probe::Probe;
 use intelnav_runtime::{DevicePref, ModelHandle};
 use intelnav_wire::{self as wire, Msg};
+
+/// Live counters the probe HTTP endpoint serves. Updated from the
+/// chain handler each time a forward pass completes.
+#[derive(Default)]
+struct RuntimeStats {
+    forward_calls:    u64,
+    /// Total tokens processed (sum of seq_len per forward call).
+    tokens:           u64,
+    /// Total wall-clock time spent inside `forward_range`, in
+    /// microseconds. Divide by `tokens` × 1e6 for tok/s on this
+    /// peer's slice.
+    forward_us:       u64,
+    /// Number of layers this peer owns — handed to the SPA so it
+    /// can normalize tok/s across heterogeneous shards.
+    blocks_owned:     u16,
+    /// Wall-clock time of the most recent forward, ms — gives the
+    /// SPA an immediate "is this peer busy right now" signal.
+    last_forward_ms:  f64,
+    /// Wall-clock instant of the most recent forward (ms since
+    /// peer start) so the SPA can show "idle for Ns".
+    last_forward_at:  u64,
+    started_at:       Option<Instant>,
+}
+
+impl RuntimeStats {
+    fn record(&mut self, tokens: u64, dur: std::time::Duration) {
+        self.forward_calls   += 1;
+        self.tokens          += tokens;
+        self.forward_us      += dur.as_micros() as u64;
+        self.last_forward_ms  = dur.as_secs_f64() * 1000.0;
+        self.last_forward_at  = self.started_at
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+    }
+    fn snapshot_json(&self, probe: &Probe) -> String {
+        let tok_per_s = if self.forward_us == 0 {
+            0.0
+        } else {
+            (self.tokens as f64) / (self.forward_us as f64 / 1_000_000.0)
+        };
+        // No GPU vendor-specific probe yet — surface backend +
+        // RAM headroom so the SPA at least stops reading 0/0.
+        let ram_total = probe.memory.total_bytes;
+        let ram_used  = ram_total.saturating_sub(probe.memory.available_bytes);
+        format!(
+            "{{\"backend\":\"{backend}\",\"cores\":{cores},\
+             \"ram_total\":{ram_total},\"ram_used\":{ram_used},\
+             \"blocks_owned\":{blocks},\"forward_calls\":{calls},\
+             \"tokens\":{tokens},\"tok_per_s\":{tok_per_s:.3},\
+             \"last_forward_ms\":{last_ms:.3},\"last_forward_at_ms\":{last_at}}}",
+            backend  = probe.backends.recommended,
+            cores    = probe.cpu.logical_cores,
+            ram_total = ram_total,
+            ram_used  = ram_used,
+            blocks   = self.blocks_owned,
+            calls    = self.forward_calls,
+            tokens   = self.tokens,
+            tok_per_s = tok_per_s,
+            last_ms  = self.last_forward_ms,
+            last_at  = self.last_forward_at,
+        )
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "pipe_peer", about = "IntelNav pipeline peer — runs one layer slice")]
@@ -90,6 +155,12 @@ struct Args {
     /// Backend: `auto`, `cpu`, `cuda[:N]`, `metal[:N]`.
     #[arg(long, default_value = "cpu")]
     device: DevicePref,
+
+    /// Sideband HTTP probe port — gateway scrapes `GET /probe` to
+    /// fill in real RAM/CPU/tok-per-s for the SPA. Default = bind
+    /// port + 1000. Pass `0` to disable the probe entirely.
+    #[arg(long)]
+    probe_port: Option<u16>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -170,6 +241,30 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(args.bind).await
         .with_context(|| format!("binding {}", args.bind))?;
 
+    // Stats handle shared between the chain handler (writes) and the
+    // probe HTTP listener (reads).
+    let stats = Arc::new(Mutex::new(RuntimeStats {
+        blocks_owned: (args.end - args.start),
+        started_at:   Some(Instant::now()),
+        ..Default::default()
+    }));
+    let probe = Arc::new(Probe::collect());
+
+    // Sideband HTTP probe — gateway hits GET /probe to render real
+    // hardware numbers in the SPA. Default port is bind+1000 so the
+    // demo script doesn't have to track another flag.
+    let probe_port = args.probe_port.unwrap_or_else(|| args.bind.port() + 1000);
+    if probe_port != 0 {
+        let probe_addr = SocketAddr::new(args.bind.ip(), probe_port);
+        let s = stats.clone(); let p = probe.clone();
+        tokio::spawn(async move {
+            if let Err(e) = serve_probe(probe_addr, s, p).await {
+                eprintln!("pipe_peer: probe listener ended: {e:#}");
+            }
+        });
+        eprintln!("pipe_peer: probe at http://{probe_addr}/probe");
+    }
+
     // Serve one connection at a time. The smoke is two processes, not a
     // multi-tenant shard — a concurrent second connection just waits.
     loop {
@@ -178,11 +273,66 @@ async fn main() -> Result<()> {
         if let Err(e) = handle(
             sock, &mut model,
             args.start as usize, args.end as usize, local_offset,
+            stats.clone(),
         ).await {
             eprintln!("pipe_peer: session ended with error: {e:#}");
         } else {
             eprintln!("pipe_peer: session ended cleanly");
         }
+    }
+}
+
+/// Hand-rolled HTTP/1.1 probe server. We only answer one path,
+/// don't need keep-alive, don't need a router — bringing in axum
+/// for two routes would more than double pipe_peer's compile time.
+async fn serve_probe(
+    addr:  SocketAddr,
+    stats: Arc<Mutex<RuntimeStats>>,
+    probe: Arc<Probe>,
+) -> Result<()> {
+    let lst = TcpListener::bind(addr).await
+        .with_context(|| format!("binding probe on {addr}"))?;
+    loop {
+        let (mut sock, _peer) = match lst.accept().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let stats_c = stats.clone();
+        let probe_c = probe.clone();
+        tokio::spawn(async move {
+            // Slurp until we see CRLFCRLF or hit a small ceiling. We
+            // don't care about headers — just need to know the path.
+            let mut buf = [0u8; 1024];
+            let mut acc = Vec::with_capacity(256);
+            loop {
+                let n = match sock.read(&mut buf).await { Ok(0) | Err(_) => 0, Ok(n) => n };
+                if n == 0 { break; }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") || acc.len() > 4096 { break; }
+            }
+            let req = String::from_utf8_lossy(&acc);
+            let first_line = req.lines().next().unwrap_or("");
+            let body;
+            let status_line;
+            if first_line.contains(" /probe") || first_line.contains(" /") {
+                let json = stats_c.lock().unwrap().snapshot_json(&probe_c);
+                body = json;
+                status_line = "HTTP/1.1 200 OK";
+            } else {
+                body = "{}".into();
+                status_line = "HTTP/1.1 404 Not Found";
+            }
+            let resp = format!(
+                "{status_line}\r\n\
+                 Content-Type: application/json\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
     }
 }
 
@@ -274,6 +424,7 @@ async fn handle(
     // Subtract from real layer indices before calling libllama.
     // 0 for full-GGUF; real_start for stitched (tensors renumbered).
     local_offset: usize,
+    stats: Arc<Mutex<RuntimeStats>>,
 ) -> Result<()> {
     let mut buf = BytesMut::with_capacity(64 * 1024);
     let mut session_id: Option<SessionId> = None;
@@ -371,7 +522,9 @@ async fn handle(
                 // mode it shifts [start..end) down to [0..end-start).
                 let local_start = real_start - local_offset;
                 let local_end   = real_end - local_offset;
+                let t_fwd = Instant::now();
                 let out = pl.forward_range(&hidden, index_pos, local_start, local_end)?;
+                stats.lock().unwrap().record(seq_len as u64, t_fwd.elapsed());
                 index_pos += seq_len;
 
                 // Echo the driver-chosen dtype on the reply so the whole

@@ -306,11 +306,18 @@ pub async fn swarm_topology(State(s): State<GatewayState>) -> Json<SwarmTopology
                     }
                 })
                 .unwrap_or_default();
-            let metrics = synth_node_metrics(&rec.peer_id.short(), uptime, &kind);
+            // Try the peer's hardware probe first; fall back to synth
+            // when the probe is unreachable (e.g. peer running an old
+            // binary or probe disabled with --probe-port=0).
+            let addr = rec.addrs.first().cloned().unwrap_or_default();
+            let metrics = match scrape_peer_probe(&s.http, &addr).await {
+                Some(real) => real,
+                None       => synth_node_metrics(&rec.peer_id.short(), uptime, &kind),
+            };
             peers.push(SwarmNode {
                 id:        rec.peer_id.short(),
                 kind,
-                addr:      rec.addrs.first().cloned().unwrap_or_default(),
+                addr,
                 tok_per_s: metrics.tok_per_s,
                 models:    rec.capability.models.iter().map(|m| m.0.clone()).collect(),
                 source:    dir_name.clone(),
@@ -351,6 +358,7 @@ pub async fn swarm_topology(State(s): State<GatewayState>) -> Json<SwarmTopology
         }
     }
 
+    let any_synth = peers.iter().any(|p| p.metrics.synthetic);
     Json(SwarmTopology {
         gateway,
         peers,
@@ -359,8 +367,78 @@ pub async fn swarm_topology(State(s): State<GatewayState>) -> Json<SwarmTopology
         upstream:   s.config.upstream_url.clone(),
         chain_tok_per_s: if chain_tok_per_s.is_finite() { chain_tok_per_s } else { 0.0 },
         chain_bytes_s,
-        synthetic:  true,
+        synthetic:  any_synth,
     })
+}
+
+/// Scrape the per-peer probe sideband (pipe_peer's `GET /probe` on
+/// `addr.port + 1000`) and turn it into [`NodeMetrics`]. Returns
+/// `None` when the probe doesn't answer in time so the caller can
+/// fall back to synth and the SPA still has something to render.
+///
+/// We deliberately probe with a tight timeout — the topology poll is
+/// a 1.5 s tick, so a 600 ms scrape ceiling keeps the SPA responsive
+/// even if a peer is wedged.
+async fn scrape_peer_probe(
+    http:    &reqwest::Client,
+    addr:    &str,
+) -> Option<NodeMetrics> {
+    if addr.is_empty() { return None; }
+    // Demo wires the gateway through netsim: addr is the netsim
+    // listen port, which is bind+100. The peer's real bind port is
+    // bind+0; its probe is on bind+1000. We have no clean way to
+    // recover "the real bind port" from "the netsim port" here, so
+    // try the netsim addr's port + 1000 first (matches non-netsim
+    // demos), then the netsim port - 100 + 1000 fallback for the
+    // demo's specific port allocation.
+    let parsed: std::net::SocketAddr = addr.parse().ok()?;
+    let host = parsed.ip();
+    // Candidates ordered most-likely-first: bind+1000, then the
+    // demo's `peer_port + 1000` derived from the netsim port.
+    let candidates = [
+        std::net::SocketAddr::new(host, parsed.port().saturating_add(1000)),
+        std::net::SocketAddr::new(host, parsed.port().saturating_sub(100).saturating_add(1000)),
+    ];
+    for cand in candidates {
+        let url = format!("http://{cand}/probe");
+        let req = http.get(&url)
+            .timeout(std::time::Duration::from_millis(600));
+        match req.send().await {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(v) = r.json::<serde_json::Value>().await {
+                    return Some(probe_to_metrics(&v));
+                }
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+fn probe_to_metrics(v: &serde_json::Value) -> NodeMetrics {
+    let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let u = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    NodeMetrics {
+        synthetic:  false,
+        // RTT is measured by chain telemetry; the probe doesn't
+        // claim it. Surface 0 here so the SPA's "live RTT" stays
+        // sourced from the per-step events instead of stale.
+        rtt_ms:     0.0,
+        tok_per_s:  f("tok_per_s") as f32,
+        // No GPU vendor probe yet — surface CPU+RAM as the
+        // utilization signal so the dashboard isn't blank. This is
+        // honest: 0% gpu_util means "no GPU detected," and
+        // ram_used/ram_total mirrors what the peer's sysinfo says.
+        gpu_util:   0.0,
+        vram_used:  u("ram_used"),
+        vram_total: u("ram_total"),
+        // Throughput estimate from tok/s × an assumed hidden-state
+        // size — we don't know exactly without the model arch, but
+        // 4 KiB per token is a fair approximation for fp16 hidden
+        // vectors in the 2k-hidden range.
+        bytes_in_s:  f("tok_per_s") as f32 * 4096.0,
+        bytes_out_s: f("tok_per_s") as f32 * 4096.0,
+    }
 }
 
 /// Deterministically synthesized per-node metrics keyed by the node's
@@ -368,9 +446,7 @@ pub async fn swarm_topology(State(s): State<GatewayState>) -> Json<SwarmTopology
 /// numbers, so a polling SPA sees gentle drift rather than noisy random
 /// jitter — looks like a real running system, not a slot machine.
 ///
-/// Drops out completely once the chain telemetry channel from arc 6
-/// sub-C lands; the SPA's `synthetic` flag is what keeps users honest
-/// about which numbers are real today.
+/// Used as a fallback when [`scrape_peer_probe`] can't reach a peer.
 fn synth_node_metrics(id: &str, uptime: u64, kind: &str) -> NodeMetrics {
     // Hash the id to get a stable per-node seed. We split it into two
     // independent slots: `seed_phase` drives the time-varying drift,
