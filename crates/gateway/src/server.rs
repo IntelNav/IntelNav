@@ -116,15 +116,18 @@ fn seed_static_directory(dir: &StaticDirectory, config: &Config) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Build peer ranges from the splits list. With 3 peers + splits
-    // [a,b], the ranges are [0..a) [a..b) [b..MAX).
+    // Chain protocol: splits.len() == peers.len() and splits[i] is
+    // peer i's *start* layer. The gateway owns [0..splits[0]) locally,
+    // peer i owns [splits[i]..splits[i+1]), and the tail peer owns
+    // [splits[N-1]..MAX) — MAX is a sentinel until the chain driver
+    // clamps it to n_blocks. Mismatched lengths fall back to MAX so
+    // we still seed something visible in /v1/swarm/topology.
     let n = config.peers.len();
     let mut ranges: Vec<(u16, u16)> = Vec::with_capacity(n);
-    let mut prev: u16 = 0;
     for i in 0..n {
-        let end = config.splits.get(i).copied().unwrap_or(u16::MAX);
-        ranges.push((prev, end));
-        prev = end;
+        let start = config.splits.get(i).copied().unwrap_or(0);
+        let end = config.splits.get(i + 1).copied().unwrap_or(u16::MAX);
+        ranges.push((start, end));
     }
 
     let model_cid = config.registry_model.clone()

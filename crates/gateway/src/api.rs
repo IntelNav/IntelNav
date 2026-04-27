@@ -372,21 +372,45 @@ pub async fn swarm_topology(State(s): State<GatewayState>) -> Json<SwarmTopology
 /// sub-C lands; the SPA's `synthetic` flag is what keeps users honest
 /// about which numbers are real today.
 fn synth_node_metrics(id: &str, uptime: u64, kind: &str) -> NodeMetrics {
-    // Hash the id to get a stable per-node seed, mod some periods so
-    // the values drift over time instead of being constants.
+    // Hash the id to get a stable per-node seed. We split it into two
+    // independent slots: `seed_phase` drives the time-varying drift,
+    // `seed_class` picks a per-peer baseline (RTT tier + GPU class) so
+    // the swarm doesn't look like three identical clones.
     let seed = id.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
-    let phase = (uptime as f32 * 0.6 + (seed % 360) as f32) * std::f32::consts::PI / 180.0;
+    let seed_phase = seed % 360;
+    let seed_class = (seed / 360) as usize;
+    let phase = (uptime as f32 * 0.6 + seed_phase as f32) * std::f32::consts::PI / 180.0;
     let drift = phase.sin() * 0.5 + 0.5;             // 0..1, slow oscillation
     let drift_fast = (phase * 4.7).sin() * 0.5 + 0.5;
 
+    // Heterogeneous LAN volunteers: one node on a fast link, one
+    // typical, one a bit slower / weaker GPU. Picked deterministically
+    // off the id so the same peer keeps the same character every run.
+    // (rtt_base, tok/s_base, gpu_total, vram_total)
+    const VOLUNTEER_TIERS: [(f32, f32, f32, u64); 3] = [
+        ( 2.4, 58.0, 0.62,  8 * 1024_u64.pow(3)),  // fast LAN, 8 GiB
+        ( 4.6, 47.0, 0.68, 12 * 1024_u64.pow(3)),  // typical LAN, 12 GiB
+        ( 9.2, 38.0, 0.74, 16 * 1024_u64.pow(3)),  // slower link, beefier card
+    ];
+
     let (rtt_ms, tok_per_s, gpu_util, vram_total, bytes_base) = match kind {
-        "gateway"   => (0.5 + drift * 0.4, 0.0,                  0.0,                0,                 0.0),
-        "cloud"     => (62.0 + drift * 18.0, 28.0 + drift_fast * 8.0,  0.78 + drift * 0.18, 24 * 1024_u64.pow(3), 220_000.0),
-        // volunteers (default): real-feeling LAN numbers
-        _           => (3.5 + drift * 2.4,  46.0 + drift_fast * 11.0, 0.65 + drift * 0.25, 8  * 1024_u64.pow(3), 180_000.0),
+        "gateway" => (0.5 + drift * 0.4, 0.0, 0.0, 0, 0.0),
+        "cloud"   => (62.0 + drift * 18.0, 28.0 + drift_fast * 8.0,
+                      0.78 + drift * 0.18, 24 * 1024_u64.pow(3), 220_000.0),
+        _         => {
+            let (rtt_b, tps_b, gpu_b, vram) = VOLUNTEER_TIERS[seed_class % VOLUNTEER_TIERS.len()];
+            // Bandwidth ≈ tok/s × hidden-state bytes-per-token. fp16 of
+            // a 2k-hidden vector + framing is ~4 KiB; scale by tok/s.
+            let bytes = tps_b * 4096.0;
+            (rtt_b + drift * (rtt_b * 0.35),
+             tps_b + drift_fast * (tps_b * 0.18),
+             (gpu_b + drift * 0.18).min(0.97),
+             vram,
+             bytes)
+        }
     };
     let vram_used = ((vram_total as f32) * (0.55 + 0.35 * drift)) as u64;
-    let bytes_out_s = bytes_base * (0.7 + 0.6 * drift_fast);
+    let bytes_out_s = bytes_base * (0.85 + 0.3 * drift_fast);
     let bytes_in_s  = bytes_out_s * 0.92;
 
     NodeMetrics {

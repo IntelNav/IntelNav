@@ -559,7 +559,7 @@ function renderPeerCard(p) {
   const el = document.createElement('div');
   el.className = 'node ' + (p.kind || 'volunteer');
   const m = p.metrics || {};
-  const layers = p.layers ? `· layers ${p.layers} ` : '';
+  const layers = p.layers ? `· layers ${fmtLayers(p.layers)} ` : '';
   const gpuPct = Math.round((m.gpu_util || 0) * 100);
   const vram = m.vram_total
     ? `${fmtBytes(m.vram_used)} / ${fmtBytes(m.vram_total)}`
@@ -620,7 +620,7 @@ function drawChain(t) {
     const p = peers[i];
     const x = margin + (i + 1) * dx;
     const color = p.kind === 'cloud' ? 'var(--cloud)' : 'var(--volunteer)';
-    const subtitle = p.layers ? p.layers : '';
+    const subtitle = p.layers ? `L ${fmtLayers(p.layers)}` : '';
     const heat = state.heat[p.id] || 0;
     drawNode(svg, x, y, p.kind, p.id, color, state.streaming || heat > 0.1, subtitle, heat);
   }
@@ -699,6 +699,21 @@ function drawEdge(svg, x1, y1, x2, y2, animated, idx, total) {
     a.setAttribute('dur', '0.7s'); a.setAttribute('repeatCount', 'indefinite');
     a.setAttribute('begin', `${(idx / Math.max(total, 1)) * 0.1}s`);
     ln.appendChild(a);
+
+    // Packet dot that physically traverses the edge — reads as
+    // "hidden state moving downstream" much more clearly than dashes.
+    const pkt = document.createElementNS(ns, 'circle');
+    pkt.setAttribute('r', '3.5');
+    pkt.setAttribute('fill', 'var(--intel-lit)');
+    pkt.setAttribute('cy', y1);
+    const ax = document.createElementNS(ns, 'animate');
+    ax.setAttribute('attributeName', 'cx');
+    ax.setAttribute('from', x1); ax.setAttribute('to', x2);
+    ax.setAttribute('dur', '1.1s');
+    ax.setAttribute('repeatCount', 'indefinite');
+    ax.setAttribute('begin', `${idx * 0.18}s`);
+    pkt.appendChild(ax);
+    svg.appendChild(pkt);
   }
   svg.appendChild(ln);
 }
@@ -882,6 +897,16 @@ function fmtNum(n) {
   if (!isFinite(n)) return '—';
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
   return n.toFixed(1);
+}
+function fmtLayers(s) {
+  // "18..24" → "18→23", "18.." → "18→…", arrow reads better than dot-dot
+  if (!s) return '';
+  if (s.endsWith('..')) return s.slice(0, -2) + ' →…';
+  const m = /^(\d+)\.\.(\d+)$/.exec(s);
+  if (!m) return s;
+  const a = +m[1], b = +m[2];
+  if (b <= a) return s;
+  return `${a}→${b - 1}`;
 }
 function fmtBytes(n) {
   if (!isFinite(n)) return '—';
