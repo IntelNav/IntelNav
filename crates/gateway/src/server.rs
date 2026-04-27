@@ -36,6 +36,8 @@ pub fn router(state: GatewayState) -> Router {
         .route("/v1/network/links/:idx", patch(api::patch_network_link))
         .route("/v1/chain/config",        get(api::chain_config))
         .route("/v1/chain/wire-dtype",   post(api::set_wire_dtype))
+        .route("/v1/models/available",    get(api::models_available))
+        .route("/v1/models/select",      post(api::models_select))
         .route("/v1/chat/completions",  post(api::chat_completions))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

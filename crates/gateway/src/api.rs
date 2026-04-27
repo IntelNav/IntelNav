@@ -608,6 +608,146 @@ pub async fn patch_network_link(
 }
 
 // ----------------------------------------------------------------------
+//  /v1/models/available + /v1/models/active — local GGUF inventory
+// ----------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct LocalModelEntry {
+    /// Filename only — e.g. `deepseek-coder-1.3b-instruct.Q4_K_M.gguf`.
+    pub name:        String,
+    /// Absolute path the gateway would load if this model were
+    /// selected. The SPA passes this back to `/v1/models/active` so
+    /// users don't have to type it.
+    pub path:        String,
+    /// File size on disk, bytes — useful for the SPA to show
+    /// "0.5B (470 MB)" without a separate metadata fetch.
+    pub size_bytes:  u64,
+    /// True when this is the GGUF the chain driver currently has
+    /// loaded. Exactly one model is active at a time when chain
+    /// mode is enabled; none when the gateway is in proxy mode.
+    pub active:      bool,
+}
+
+#[derive(Serialize)]
+pub struct ModelsAvailable {
+    /// Models listed in the order they appear on disk.
+    pub models:    Vec<LocalModelEntry>,
+    /// Currently-loaded GGUF path, if any. Mirrors what
+    /// `models[i].active=true` already conveys but saves the SPA a
+    /// linear scan.
+    pub active:    Option<String>,
+    /// `models_dir` paths the gateway searched. Surfaced for
+    /// diagnostics — if the SPA shows zero models the user knows
+    /// where to drop new ones.
+    pub searched:  Vec<String>,
+}
+
+/// Scan `config.models_dir` for `*.gguf` and any directory the
+/// `INTELNAV_MODELS_SEARCH` env var lists (colon-separated). The env
+/// var is how the demo script points the gateway at the project's
+/// shared `models/` directory without forcing the operator to set
+/// `INTELNAV_MODELS_DIR` (which doubles as the local cache root).
+pub async fn models_available(State(s): State<GatewayState>) -> Json<ModelsAvailable> {
+    let mut dirs: Vec<std::path::PathBuf> = vec![s.config.models_dir.clone()];
+    if let Ok(extra) = std::env::var("INTELNAV_MODELS_SEARCH") {
+        for p in extra.split(':').filter(|p| !p.is_empty()) {
+            dirs.push(std::path::PathBuf::from(p));
+        }
+    }
+    let active = s.driver.as_ref().and_then(|_| {
+        std::env::var("INTELNAV_GATEWAY_MODEL").ok()
+    });
+
+    let mut models: Vec<LocalModelEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = Default::default();
+    for dir in &dirs {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("gguf") { continue; }
+            let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !seen.insert(canon.clone()) { continue; }
+            let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+            let path_str = path.to_string_lossy().to_string();
+            let is_active = match &active {
+                Some(a) => std::path::Path::new(a).canonicalize().ok().map_or(false, |c| c == canon),
+                None    => false,
+            };
+            models.push(LocalModelEntry {
+                name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                path: path_str,
+                size_bytes: size,
+                active: is_active,
+            });
+        }
+    }
+    // Stable order: smallest first — the demo flow goes "try the
+    // tiny one to verify the chain, then move up to a real model."
+    models.sort_by_key(|m| m.size_bytes);
+
+    Json(ModelsAvailable {
+        models,
+        active,
+        searched: dirs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+    })
+}
+
+#[derive(Deserialize)]
+pub struct ModelSelectReq {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct ModelSelectResp {
+    /// `true` when the gateway already has this model loaded — the
+    /// SPA can pick it without restarting anything.
+    pub already_active:  bool,
+    /// Plain-English advice the SPA renders as a toast. Live model
+    /// swap requires every peer to reload its slice, which needs a
+    /// peer-side reload RPC we haven't built yet — in the meantime
+    /// the answer is "restart the demo with this env var set."
+    pub message:         String,
+    pub restart_command: Option<String>,
+}
+
+/// POST `/v1/models/select` — body `{"path": "/abs/path/to.gguf"}`.
+/// First cut: read-only confirmation. If the requested model is
+/// already active we say so; otherwise we hand back the restart
+/// command. Live swap lands once `pipe_peer` grows a reload RPC.
+pub async fn models_select(
+    State(s):  State<GatewayState>,
+    Json(req): Json<ModelSelectReq>,
+) -> Json<ModelSelectResp> {
+    let active = std::env::var("INTELNAV_GATEWAY_MODEL").ok();
+    let already = active.as_deref().map_or(false, |a| {
+        let a_canon = std::path::Path::new(a).canonicalize().ok();
+        let r_canon = std::path::Path::new(&req.path).canonicalize().ok();
+        match (a_canon, r_canon) {
+            (Some(a), Some(r)) => a == r,
+            _                  => a == req.path,
+        }
+    });
+    if already {
+        return Json(ModelSelectResp {
+            already_active:  true,
+            message:         "already active".into(),
+            restart_command: None,
+        });
+    }
+    // Heuristic command — preserves existing knobs the user might
+    // already have set (NETSIM, STITCHED, …) by only overriding GGUF.
+    let cmd = format!("GGUF={} scripts/demo.sh", req.path);
+    let _ = s; // unused for now
+    Json(ModelSelectResp {
+        already_active:  false,
+        message:         "live swap needs peer-side reload (M3 work). \
+                          Restart the demo with this command to pick \
+                          this model.".into(),
+        restart_command: Some(cmd),
+    })
+}
+
+// ----------------------------------------------------------------------
 //  /v1/chain/config — live-readable chain knobs (wire_dtype today)
 // ----------------------------------------------------------------------
 

@@ -126,6 +126,55 @@
     color: var(--inactive);
     font-size: 11px;
   }
+  .panel-head select {
+    background: var(--panel-hi);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    margin-left: 8px;
+    cursor: pointer;
+  }
+  .panel-head select:hover { border-color: var(--border-hi); }
+
+  .toast {
+    position: absolute;
+    right: 12px;
+    bottom: 70px;
+    background: var(--panel);
+    border: 1px solid var(--border-hi);
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-size: 12px;
+    max-width: 380px;
+    z-index: 10;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  }
+  .toast .ttl {
+    color: var(--intel);
+    font-family: var(--mono);
+    margin-bottom: 4px;
+  }
+  .toast code {
+    display: block;
+    background: var(--panel-hi);
+    color: var(--intel-lit);
+    padding: 6px 8px;
+    border-radius: 3px;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .toast .close {
+    float: right;
+    color: var(--inactive);
+    cursor: pointer;
+    margin-left: 8px;
+  }
 
   /* ---------- chat panel ---------- */
   .transcript {
@@ -519,6 +568,7 @@
     <div class="panel-head">
       <span class="dot" id="chat-dot"></span>
       chat · /v1/chat/completions
+      <select id="model-picker" title="active model — picking another shows the demo restart command"></select>
       <span class="right" id="chat-meta"></span>
     </div>
     <div class="transcript" id="transcript">
@@ -1255,6 +1305,81 @@ function onSpeedSlider() {
 }
 
 // ----------------------------------------------------------------------
+//  /v1/models/available — model picker dropdown
+// ----------------------------------------------------------------------
+
+let modelsLoadedOnce = false;
+
+async function pollModels() {
+  let data;
+  try {
+    const r = await fetch('/v1/models/available', { cache: 'no-store' });
+    if (!r.ok) return;
+    data = await r.json();
+  } catch { return; }
+  const sel = document.getElementById('model-picker');
+  if (!sel) return;
+  // Don't blow the dropdown away mid-pick — only refresh when the
+  // model set actually changed.
+  const want = JSON.stringify(data.models.map(m => [m.path, m.active]));
+  if (sel.dataset.fingerprint === want && modelsLoadedOnce) return;
+  sel.dataset.fingerprint = want;
+  sel.innerHTML = '';
+  if (data.models.length === 0) {
+    const o = document.createElement('option');
+    o.textContent = 'no GGUFs in models_dir';
+    o.disabled = true;
+    sel.appendChild(o);
+    return;
+  }
+  for (const m of data.models) {
+    const o = document.createElement('option');
+    o.value = m.path;
+    o.textContent = m.name + (m.size_bytes ? ` (${fmtBytes(m.size_bytes)})` : '');
+    if (m.active) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (!modelsLoadedOnce) {
+    sel.addEventListener('change', onModelPicked);
+    modelsLoadedOnce = true;
+  }
+}
+
+async function onModelPicked() {
+  const sel = document.getElementById('model-picker');
+  const path = sel.value;
+  let resp;
+  try {
+    const r = await fetch('/v1/models/select', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({ path }),
+    });
+    resp = await r.json();
+  } catch { return; }
+  if (resp.already_active) return;
+  showToast('switch model', resp.message, resp.restart_command);
+  // Snap the dropdown back to the active model — the swap didn't
+  // actually happen, so the SPA shouldn't pretend it did.
+  pollModels();
+}
+
+function showToast(title, msg, code) {
+  document.querySelector('.toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `
+    <span class="close" title="dismiss">×</span>
+    <div class="ttl">${escapeHtml(title)}</div>
+    <div>${escapeHtml(msg)}</div>
+    ${code ? `<code>${escapeHtml(code)}</code>` : ''}
+  `;
+  el.querySelector('.close').addEventListener('click', () => el.remove());
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 12000);
+}
+
+// ----------------------------------------------------------------------
 //  /v1/chain/config + wire-dtype toggle
 // ----------------------------------------------------------------------
 
@@ -1410,6 +1535,7 @@ function tickHeat() {
 pollTopology();
 pollLinks();
 pollChainConfig();
+pollModels();
 renderProfileRow();
 syncSpeedSlider();
 bindDtypeSeg();
@@ -1418,6 +1544,7 @@ connectEvents();
 setInterval(pollTopology, 1500);
 setInterval(pollLinks, 1500);
 setInterval(pollChainConfig, 3000);
+setInterval(pollModels, 5000);
 setInterval(refreshTopologyAge, 1000);
 setInterval(tickHeat, 220);
 </script>
