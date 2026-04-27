@@ -24,6 +24,38 @@ server.
 
 ---
 
+## Live demo
+
+One command brings up the whole stack on localhost:
+
+```bash
+scripts/demo.sh
+```
+
+It spawns four `pipe_peer`s loading only their slice of the GGUF (Path B
+stitched-subset), four `intelnav-netsim` shapers in front of them
+modelling per-link latency and bandwidth, the chunk-server, and the
+OpenAI-compatible gateway with the SPA at <http://127.0.0.1:8787>.
+
+The browser surface includes:
+
+- Chat panel that streams tokens through the chain, with a model picker
+  that lists every GGUF in `models/`.
+- Live network panel: pick a profile (LAN / Metro / WAN / Bad WAN),
+  drag the speed slider, see the chain RTT change in real time.
+- Per-peer hardware probe: real RAM / CPU / tok-per-s scraped from
+  every peer.
+- `fp16 ↔ int8` wire-dtype toggle that halves the bytes-per-step
+  through the chain.
+- MoE-aware metadata reader — drops a static expert grid under the
+  chain whenever the active GGUF declares `expert_count > 1`
+  (Mixtral, DeepSeek-V2-Lite, etc.).
+
+Defaults work on Qwen2.5-0.5B (~470 MB). Override with
+`GGUF=/abs/path/to.gguf scripts/demo.sh`. Tear down with `Ctrl+C`.
+
+---
+
 ## Status
 
 Reference point: [`paper/paper.pdf`](../paper/paper.pdf) §12.3 milestones.
@@ -33,16 +65,21 @@ Detailed ledger: [`docs/dev/PROGRESS.md`](docs/dev/PROGRESS.md).
 | -------------------------------------- | -------------- |
 | Wire protocol (CBOR, §A)               | done           |
 | Crypto (Ed25519 / X25519 / AES-GCM)    | done           |
-| Layer-split runtime (Qwen2, candle)    | done, bit-identical to full forward |
+| Layer-split runtime (Qwen2, ggml)      | done, bit-identical to full forward |
+| Stitched-subset GGUF (Path B)          | done — peer loads only its slice |
 | N-peer localhost pipeline (TCP)        | done           |
 | Speculative decoding v1 (greedy)       | done (CPU, GPU perf pending) |
-| Int8 wire quantization                 | done, opt-in   |
-| HTTP shard registry                    | done           |
-| OpenAI-compatible gateway              | done (proxy mode) |
-| Terminal UI (Ratatui)                  | partial — see [`docs/dev/PROGRESS_TUI.md`](docs/dev/PROGRESS_TUI.md) |
+| Int8 wire quantization                 | done, live toggle |
+| OpenAI-compatible gateway + chain mode | done           |
+| Browser SPA (chat + topology + network panel) | done    |
+| Per-peer hardware probe (real RAM/CPU/tok-per-s) | done |
+| User-space netsim shapers (delay/bw/loss) | done — live tunable from SPA |
+| Live model picker (read-only swap)     | done           |
+| MoE detection & metadata display       | done — phase 1 |
+| MoE expert-firing telemetry            | **pending** — phase 2 |
+| MoE expert-parallel chain              | **pending** — phase 3 |
 | libp2p + Kademlia DHT                  | **stub** — M2  |
 | Continuous batching / quorum           | **pending** — M3 |
-| IPFS-backed weights, installer, testnet| **pending** — M4 |
 
 Full breakdown: [`docs/STATUS.md`](docs/STATUS.md).
 

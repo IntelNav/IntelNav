@@ -1860,6 +1860,7 @@ dependencies = [
  "http-body-util",
  "intelnav-core",
  "intelnav-crypto",
+ "intelnav-model-store",
  "intelnav-net",
  "intelnav-runtime",
  "intelnav-wire",
@@ -1937,6 +1938,25 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "intelnav-netsim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "futures",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

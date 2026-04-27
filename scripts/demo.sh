@@ -50,10 +50,17 @@ GATEWAY_PORT="${GATEWAY_PORT:-8787}"
 LOG_DIR="${LOG_DIR:-$ROOT/target/demo-logs}"
 
 # Resolve binaries — prefer the freshest build.
-INTELNAV_BIN="${INTELNAV_BIN:-$ROOT/target/debug/intelnav}"
-PIPE_PEER_BIN="${PIPE_PEER_BIN:-$ROOT/target/debug/examples/pipe_peer}"
-CHUNK_BIN="${CHUNK_BIN:-$ROOT/target/debug/intelnav-chunk}"
-NETSIM_BIN="${NETSIM_BIN:-$ROOT/target/debug/intelnav-netsim}"
+# Pick debug vs release builds. Release is the polished one for
+# recordings — set RELEASE=1 to switch the whole stack over. Each
+# *_BIN env var still wins individually if you want to mix.
+PROFILE_DIR="debug"
+if [[ "${RELEASE:-0}" == "1" ]]; then
+    PROFILE_DIR="release"
+fi
+INTELNAV_BIN="${INTELNAV_BIN:-$ROOT/target/$PROFILE_DIR/intelnav}"
+PIPE_PEER_BIN="${PIPE_PEER_BIN:-$ROOT/target/$PROFILE_DIR/examples/pipe_peer}"
+CHUNK_BIN="${CHUNK_BIN:-$ROOT/target/$PROFILE_DIR/intelnav-chunk}"
+NETSIM_BIN="${NETSIM_BIN:-$ROOT/target/$PROFILE_DIR/intelnav-netsim}"
 
 # Path B (stitched-subset) is the default: each peer downloads + loads
 # only its layer slice, not the full GGUF. Set STITCHED=0 to fall back
@@ -167,6 +174,7 @@ echo "demo: peers     = ${#PORTS[@]} on ports ${PORTS[*]}"
 echo "demo: gateway   = http://127.0.0.1:$GATEWAY_PORT"
 echo "demo: stitched  = $STITCHED"
 echo "demo: netsim    = $NETSIM (ports ${NETSIM_PORTS[*]})"
+echo "demo: profile   = $PROFILE_DIR  (set RELEASE=1 for polished/recording build)"
 echo "demo: logs      = $LOG_DIR"
 echo
 
