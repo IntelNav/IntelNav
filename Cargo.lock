@@ -1781,7 +1781,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "intelnav-cli"
+name = "intelnav-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1789,7 +1789,6 @@ dependencies = [
  "blake3",
  "bs58",
  "bytes",
- "clap",
  "crossterm",
  "directories",
  "futures",
@@ -1810,8 +1809,21 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "intelnav-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "intelnav-app",
+ "intelnav-core",
+ "libc",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1913,6 +1925,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "intelnav-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "intelnav-app",
+ "intelnav-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

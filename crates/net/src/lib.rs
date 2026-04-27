@@ -1,17 +1,20 @@
 //! `intelnav-net` — peer discovery & network substrate.
 //!
-//! [`swarm::Libp2pNode`] is the long-lived libp2p host: TCP +
-//! Noise XX + yamux + identify + ping + Kademlia. The shard index
-//! lives on top of Kademlia in [`dht`] — peers PUT a provider
-//! record per `(model_cid, layer_range)` slice they own and GET to
-//! discover who else does.
+//! Three layers, surfaced from least-magical to most:
 //!
-//! Three directory implementations exist alongside the swarm for the
-//! boot path before the DHT routing table is populated:
+//! 1. **Boot directories.** [`StaticDirectory`] / [`MdnsDirectory`] /
+//!    [`RegistryDirectory`] populate a peer list before the DHT
+//!    routing table has converged. All three implement
+//!    [`PeerDirectory`] so callers treat them interchangeably.
 //!
-//! * [`StaticDirectory`] — hardcoded peers from config.
-//! * [`MdnsDirectory`]   — mDNS/Bonjour local-network discovery.
-//! * [`RegistryDirectory`] — periodically polls a shard-registry HTTP API.
+//! 2. **The swarm host.** [`Libp2pNode`] runs TCP + Noise XX + yamux
+//!    + `identify` + `ping` + Kademlia behind a single command
+//!    channel. Spawn it with [`spawn_libp2p_node`].
+//!
+//! 3. **The shard index.** [`SwarmIndex`] sits on top of the DHT and
+//!    answers "which models can the swarm serve me right now?" by
+//!    fanning out per-`(cid, range)` Kademlia lookups. The picker
+//!    in `intelnav-app` consumes its [`SwarmModel`] output.
 
 #![forbid(unsafe_code)]
 
@@ -27,8 +30,14 @@ pub use directory::{PeerDirectory, PeerRecord, StaticDirectory};
 pub use mdns::MdnsDirectory;
 pub use registry_dir::RegistryDirectory;
 pub use swarm::{
-    spawn as spawn_libp2p_node, identity_to_keypair, IdentifiedPeer, IntelNavBehaviour,
-    Libp2pNode, AGENT_VERSION, PROTOCOL_VERSION,
+    spawn as spawn_libp2p_node, identity_to_keypair, IdentifiedPeer, Libp2pNode,
+    AGENT_VERSION, PROTOCOL_VERSION,
 };
-pub use libp2p::Multiaddr;
 pub use swarm_index::{RangeCoverage, SwarmIndex, SwarmModel};
+
+// Multiaddr is a libp2p type re-exported for convenience — callers that
+// need to construct one for `spawn_libp2p_node` use this re-export
+// rather than depending on libp2p directly. Wrapping it would require
+// also wrapping PeerId and IdentifiedPeer.listen_addrs, which isn't
+// worth the churn.
+pub use libp2p::Multiaddr;

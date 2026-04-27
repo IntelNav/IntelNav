@@ -124,15 +124,16 @@ pub async fn run(
     )));
     app.greet_mode();
 
-    // Spawn the libp2p host. Hold the SwarmHandle on the stack so
-    // the periodic announce task lives as long as the TUI, then
-    // expose its SwarmIndex through AppState.
-    let swarm_handle = match crate::swarm_node::spawn(config, config.models_dir.clone()).await {
+    // Spawn a *client-only* libp2p host: routing table + DHT
+    // queries, no announce loop. To host slices for the swarm,
+    // run `intelnav-node` separately — closing this chat window
+    // won't take your slices offline because the chat never
+    // published them.
+    let swarm_handle = match crate::swarm_node::spawn_client_only(config).await {
         Ok(h) => {
             app.history.push(Turn::system(format!(
-                "swarm: peer {} listening on {}",
-                h.node.peer_id, h.node.listen_addrs.first()
-                    .map(|m| m.to_string()).unwrap_or_else(|| "<no addr>".into()),
+                "swarm: peer {} reading the DHT (run `intelnav-node` to host).",
+                h.node.peer_id,
             )));
             app.swarm_index = Some(h.index.clone());
             Some(h)

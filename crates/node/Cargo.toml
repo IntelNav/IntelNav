@@ -1,0 +1,21 @@
+[package]
+name        = "intelnav-node"
+description = "`intelnav-node` — long-running host daemon for the IntelNav swarm."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[[bin]]
+name = "intelnav-node"
+path = "src/main.rs"
+
+[dependencies]
+intelnav-core = { workspace = true }
+intelnav-app  = { workspace = true }
+
+tokio              = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap               = { workspace = true }

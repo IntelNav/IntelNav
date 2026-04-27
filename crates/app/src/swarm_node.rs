@@ -43,10 +43,40 @@ impl Drop for SwarmHandle {
     }
 }
 
-/// Spawn the libp2p node, connect bootstrap peers, and start the
-/// announce loop. Best-effort: failures to dial a bootstrap or to
-/// load a sidecar are warned-and-skipped, never fatal.
+/// Spawn a *client-only* libp2p host: routing table, DHT queries,
+/// no announce loop, no scan of kept_ranges sidecars. Used by the
+/// chat CLI so opening `/models` populates the swarm rows but
+/// closing the chat doesn't take any slices off the network.
+pub async fn spawn_client_only(config: &Config) -> Result<SwarmHandle> {
+    spawn_inner(config, None).await
+}
+
+/// Run the host daemon forever. Spawns the swarm, hosts the kept
+/// slices, and blocks on Ctrl+C. Used by the `intelnav-node` binary.
+pub async fn serve_forever(config: &Config, models_dir: PathBuf) -> Result<()> {
+    let handle = spawn(config, models_dir).await?;
+    info!(
+        peer_id = %handle.node.peer_id,
+        "intelnav-node ready — Ctrl+C to stop",
+    );
+    tokio::signal::ctrl_c().await
+        .map_err(|e| anyhow::anyhow!("install ctrl_c handler: {e}"))?;
+    info!("ctrl_c received, shutting down");
+    drop(handle);
+    Ok(())
+}
+
+/// Spawn the host daemon: libp2p + bootstrap dials + sidecar scan +
+/// 5-minute announce loop. Best-effort failures are warned, never
+/// fatal — a peer that can't reach a bootstrap is still useful.
 pub async fn spawn(config: &Config, models_dir: PathBuf) -> Result<SwarmHandle> {
+    spawn_inner(config, Some(models_dir)).await
+}
+
+/// Internal driver: when `models_dir` is `Some`, run the announce
+/// loop that publishes kept_ranges sidecars. When `None`, skip the
+/// scan + announce — the caller is a read-only consumer of the DHT.
+async fn spawn_inner(config: &Config, models_dir: Option<PathBuf>) -> Result<SwarmHandle> {
     let identity = load_or_generate_identity()?;
     let keypair = identity_to_keypair(&identity)
         .context("identity_to_keypair")?;
@@ -70,7 +100,26 @@ pub async fn spawn(config: &Config, models_dir: PathBuf) -> Result<SwarmHandle> 
         let _ = node.bootstrap().await;
     }
 
-    let kept = scan_kept_ranges(&models_dir);
+    let announce = match models_dir {
+        Some(dir) => spawn_announce_loop(&node, config, &dir).await,
+        None => None,
+    };
+
+    let index = SwarmIndex::new(node.clone());
+    Ok(SwarmHandle { node, index, _announce: announce })
+}
+
+/// Boot the periodic announce loop. Returns `None` when the peer
+/// hosts no slices (nothing to publish), in which case dropping
+/// the SwarmHandle has nothing to abort.
+async fn spawn_announce_loop(
+    node: &Arc<Libp2pNode>,
+    config: &Config,
+    models_dir: &std::path::Path,
+) -> Option<JoinHandle<()>> {
+    let kept = scan_kept_ranges(models_dir);
+    if kept.is_empty() { return None; }
+
     let chunks = config.chunks_addr.clone();
     let forward = config.forward_addr.clone();
     let peer_id_b58 = node.peer_id.to_base58();
@@ -78,40 +127,28 @@ pub async fn spawn(config: &Config, models_dir: PathBuf) -> Result<SwarmHandle> 
         .map(|m| m.to_string()).collect();
 
     // Initial announce so a freshly-booted peer is visible immediately.
-    if !kept.is_empty() {
-        announce_all(
-            &node, &kept,
-            &peer_id_b58, &listen_strings,
-            chunks.as_deref(), forward.as_deref(),
-        ).await;
-    }
+    announce_all(
+        node, &kept,
+        &peer_id_b58, &listen_strings,
+        chunks.as_deref(), forward.as_deref(),
+    ).await;
 
-    let announce = if kept.is_empty() {
-        None
-    } else {
-        let node_t = node.clone();
-        let kept_t = kept.clone();
-        let peer_t = peer_id_b58.clone();
-        let listen_t = listen_strings.clone();
-        let chunks_t = chunks.clone();
-        let forward_t = forward.clone();
-        Some(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(ANNOUNCE_INTERVAL);
-            // Skip the first immediate fire — initial announce already done.
+    let node_t   = node.clone();
+    let chunks_t = chunks;
+    let forward_t = forward;
+    Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(ANNOUNCE_INTERVAL);
+        // Skip the first immediate fire — initial announce already done.
+        tick.tick().await;
+        loop {
             tick.tick().await;
-            loop {
-                tick.tick().await;
-                announce_all(
-                    &node_t, &kept_t,
-                    &peer_t, &listen_t,
-                    chunks_t.as_deref(), forward_t.as_deref(),
-                ).await;
-            }
-        }))
-    };
-
-    let index = SwarmIndex::new(node.clone());
-    Ok(SwarmHandle { node, index, _announce: announce })
+            announce_all(
+                &node_t, &kept,
+                &peer_id_b58, &listen_strings,
+                chunks_t.as_deref(), forward_t.as_deref(),
+            ).await;
+        }
+    }))
 }
 
 /// Walk `<models_dir>/.shards/<cid>/kept_ranges.json` and collect

@@ -1,36 +1,22 @@
-//! `intelnav` — the user-facing CLI.
+//! `intelnav` — chat client for the IntelNav swarm.
 //!
-//! Primary interactive `chat` REPL, terse one-shot `ask`, plus operator
-//! commands (`models`, `doctor`, `init`, `node`).
+//! Thin binary: parses args, sets up tracing, and hands off to
+//! `intelnav-app`. The substantive code lives there so the
+//! `intelnav-node` daemon can share it.
 
 #![deny(unsafe_code)]
-
-mod banner;
-mod browser;
-mod catalog;
-mod chain_driver;
-mod cmd;
-mod contribute;
-mod delta;
-mod swarm_contribute;
-mod swarm_node;
-mod download;
-mod local;
-mod shimmer;
-mod slash;
-mod theme;
-mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use intelnav_app::{cmd, tui};
 use intelnav_core::{Config, RunMode};
 
 #[derive(Parser)]
 #[command(
     name = "intelnav",
     version,
-    about = "IntelNav — decentralized pipeline-parallel LLM inference",
+    about = "IntelNav — chat through a decentralized inference swarm",
     long_about = None,
 )]
 struct Cli {
@@ -54,49 +40,38 @@ struct Cli {
 enum Command {
     /// Interactive chat REPL (default).
     Chat {
-        /// Model to use; overrides config default.
         #[arg(short, long)]
         model: Option<String>,
-
-        /// Quorum over disjoint shard chains.
         #[arg(short, long)]
         quorum: Option<u8>,
-
-        /// Opt in to cross-continent (T3) routes.
         #[arg(long)]
         allow_wan: bool,
     },
 
     /// Non-interactive one-shot query.
     Ask {
-        /// Model to use.
         #[arg(short, long)]
         model: Option<String>,
-
-        /// Prompt text. If omitted, reads from stdin.
         prompt: Option<String>,
     },
 
-    /// Run a contributor (shard) node.  Bridges to the Python shard server.
+    /// Bridge to the Python shard server.
     Node {
-        /// Address of the local shard server's Unix socket or TCP endpoint.
         #[arg(long, default_value = "/tmp/intelnav_shard.sock")]
         shard: String,
     },
 
     /// List local models in `models_dir`.
     Models {
-        /// Print as JSON instead of a formatted table.
         #[arg(long)]
         json: bool,
     },
 
-    /// Preflight checks (libllama loadable, identity valid, models present).
+    /// Preflight checks.
     Doctor,
 
     /// Write a default config file and generate a peer identity.
     Init {
-        /// Overwrite an existing config.
         #[arg(long)]
         force: bool,
     },
@@ -111,15 +86,7 @@ async fn main() -> Result<()> {
         config.mode = m;
     }
 
-    // The interactive TUI owns the screen — stderr writes would paint
-    // over the Ratatui canvas. For that one command, send tracing to
-    // a log file (and redirect raw stderr there too, to catch any
-    // stray `eprintln!` from deps). All other commands keep the usual
-    // stderr writer so operators see logs live.
-    let is_tui = matches!(
-        cli.command,
-        None | Some(Command::Chat { .. })
-    );
+    let is_tui = matches!(cli.command, None | Some(Command::Chat { .. }));
     let level = match cli.verbose {
         0 => "intelnav=info,warn",
         1 => "intelnav=debug,info",
@@ -134,9 +101,8 @@ async fn main() -> Result<()> {
         }
         let file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&log_path)?;
-        // Rebind raw FD 2 so llama.cpp / reqwest / any native dep
-        // that writes directly to stderr goes to the log file
-        // instead of painting over the Ratatui canvas.
+        // Rebind raw FD 2 so native deps that write directly to
+        // stderr can't paint over the Ratatui canvas.
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
