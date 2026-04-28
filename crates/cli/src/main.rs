@@ -100,8 +100,8 @@ async fn main() -> Result<()> {
     if is_tui {
         match gate::check(&config) {
             gate::GateState::Pass(_) => {}
-            gate::GateState::NeedsContribution { suggestion } => {
-                print_gate_block(suggestion);
+            gate::GateState::NeedsContribution { suggestion, hardware_tier } => {
+                print_gate_block(suggestion, hardware_tier);
                 return Ok(());
             }
         }
@@ -171,37 +171,71 @@ async fn main() -> Result<()> {
 ///
 /// Writes to stdout (the user's terminal) before the TUI's stderr
 /// redirect kicks in, so the message actually reaches them.
-fn print_gate_block(suggestion: Option<intelnav_app::gate::Suggestion>) {
+///
+/// Shape of the message depends on hardware tier — capable hardware
+/// doesn't see relay-only as a suggested option (they'd be hurting
+/// the network by leeching). The env var still works as an override
+/// for power users who know what they're doing.
+fn print_gate_block(
+    suggestion: Option<intelnav_app::gate::Suggestion>,
+    tier: intelnav_app::gate::HardwareTier,
+) {
+    use intelnav_app::gate::HardwareTier;
+
     println!();
     println!("\x1b[1mIntelNav requires every peer to contribute.\x1b[0m");
     println!();
-    println!("You're not hosting a slice yet. Two ways forward:");
-    println!();
-    if let Some(s) = suggestion {
-        let (start, end) = s.range;
-        let fit_label = match s.fit {
-            intelnav_app::catalog::Fit::Fits  => "comfortable",
-            intelnav_app::catalog::Fit::Tight => "tight (close to RAM limit)",
-            intelnav_app::catalog::Fit::TooBig => "too big",
-        };
-        println!("  1. \x1b[32mHost a slice\x1b[0m — your hardware can comfortably run:");
-        println!("       \x1b[1m{}\x1b[0m  layers [{start}..{end})  ({fit_label})",
-            s.entry.display_name);
-        println!();
-        println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m to launch the TUI,");
-        println!("       then \x1b[1m/models\x1b[0m, highlight the row, press \x1b[1mc\x1b[0m to contribute.");
-        println!("       Once the contribute flow finishes you can drop the env var.");
-    } else {
-        println!("  1. \x1b[33mHost a slice\x1b[0m — your hardware is below the catalog floor.");
-        println!("       Pick \"relay only\" instead, or upgrade to ≥4 GB free RAM.");
+
+    match tier {
+        HardwareTier::Capable => {
+            println!("Your hardware is plenty for hosting. \x1b[1mPlease host a slice.\x1b[0m");
+            println!("The network only works because capable peers commit their hardware.");
+            println!();
+            if let Some(s) = suggestion {
+                let (start, end) = s.range;
+                println!("  Suggested:  \x1b[32m{}\x1b[0m  layers [{start}..{end})",
+                    s.entry.display_name);
+            }
+            println!();
+            println!("  How to host:");
+            println!("    \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m   (one-time, to reach the TUI)");
+            println!("    Inside the TUI: \x1b[1m/models\x1b[0m → highlight a row → press \x1b[1mc\x1b[0m");
+            println!("    Then \x1b[1m/service install\x1b[0m to make it permanent across reboots.");
+            println!();
+        }
+        HardwareTier::Modest => {
+            println!("You're not hosting a slice yet. Two ways forward:");
+            println!();
+            if let Some(s) = suggestion {
+                let (start, end) = s.range;
+                let fit_label = match s.fit {
+                    intelnav_app::catalog::Fit::Fits  => "comfortable",
+                    intelnav_app::catalog::Fit::Tight => "tight (close to RAM limit)",
+                    intelnav_app::catalog::Fit::TooBig => "too big",
+                };
+                println!("  1. \x1b[32mHost a slice\x1b[0m \x1b[1m(strongly preferred)\x1b[0m:");
+                println!("       \x1b[1m{}\x1b[0m  layers [{start}..{end})  ({fit_label})",
+                    s.entry.display_name);
+                println!();
+                println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m to reach the TUI,");
+                println!("       then \x1b[1m/models\x1b[0m → highlight → press \x1b[1mc\x1b[0m to contribute.");
+            }
+            println!();
+            println!("  2. \x1b[36mRelay only\x1b[0m — DHT routing, no inference:");
+            println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
+            println!("       (Make permanent: set \x1b[1mrelay_only = true\x1b[0m in ~/.config/intelnav/config.toml)");
+            println!();
+        }
+        HardwareTier::Constrained => {
+            println!("Your hardware is below the catalog's hosting floor.");
+            println!("\x1b[36mRelay-only mode\x1b[0m is the right path:");
+            println!();
+            println!("    \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
+            println!();
+            println!("Your daemon will participate in the DHT (which still helps the network)");
+            println!("but won't run inference layers.");
+            println!("Make permanent: set \x1b[1mrelay_only = true\x1b[0m in ~/.config/intelnav/config.toml.");
+            println!();
+        }
     }
-    println!();
-    println!("  2. \x1b[36mRelay only\x1b[0m — your daemon participates in the DHT but");
-    println!("       runs no inference. Quickest path to a chat session:");
-    println!();
-    println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
-    println!();
-    println!("       To make it permanent: set \x1b[1mrelay_only = true\x1b[0m in");
-    println!("       ~/.config/intelnav/config.toml.");
-    println!();
 }

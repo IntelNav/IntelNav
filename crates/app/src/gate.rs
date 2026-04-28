@@ -25,7 +25,25 @@ pub enum GateState {
     /// Chat is allowed: user is contributing one way or the other.
     Pass(GatePass),
     /// User must pick a slice (or enable relay mode) before chatting.
-    NeedsContribution { suggestion: Option<Suggestion> },
+    NeedsContribution { suggestion: Option<Suggestion>, hardware_tier: HardwareTier },
+}
+
+/// How capable the user's machine is, for shaping the gate copy.
+///
+/// We use this to *de-emphasise* the relay-only escape hatch when
+/// the user could comfortably host a meaningful slice. The env var
+/// `INTELNAV_RELAY_ONLY=1` always works as an override — but capable
+/// hardware shouldn't see relay-only as the suggested path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardwareTier {
+    /// Comfortably fits at least one slice of a 7B-class model.
+    /// Relay-only is hidden from the gate suggestion.
+    Capable,
+    /// Comfortably fits 0.5B–3B slices but not 7B.
+    /// Both options shown.
+    Modest,
+    /// Below the catalog floor — relay-only is the realistic path.
+    Constrained,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,7 +72,35 @@ pub fn check(config: &Config) -> GateState {
         return GateState::Pass(GatePass::Relay);
     }
     let probe = Probe::collect();
-    GateState::NeedsContribution { suggestion: best_suggestion(&probe) }
+    let suggestion = best_suggestion(&probe);
+    let hardware_tier = classify_hardware(&probe);
+    GateState::NeedsContribution { suggestion, hardware_tier }
+}
+
+/// Bucket the user's machine into a tier so we can shape the gate copy.
+///
+/// Threshold: `Capable` requires the user to fit any 4 GB+ model
+/// slice. The Qwen 7B Q4_K_M weights are ~4.5 GB; if the user's
+/// available RAM passes the slice-fit test for that tier, they're
+/// strong enough that we should not surface relay-only as an
+/// alternative path. The bar can be raised later as the catalog
+/// grows.
+fn classify_hardware(probe: &Probe) -> HardwareTier {
+    const CAPABLE_FLOOR: u64 = 4 * 1024 * 1024 * 1024;
+    const MODEST_FLOOR:  u64 = 1024 * 1024 * 1024;
+    let free = probe.memory.available_bytes;
+    // Look for any 7B-class entry the user can host one slice of.
+    for entry in catalog() {
+        if entry.size_bytes < CAPABLE_FLOOR { continue; }
+        if free >= entry.ram_bytes_min {
+            return HardwareTier::Capable;
+        }
+    }
+    if free >= MODEST_FLOOR {
+        HardwareTier::Modest
+    } else {
+        HardwareTier::Constrained
+    }
 }
 
 fn hosts_any_slice(models_dir: &Path) -> bool {

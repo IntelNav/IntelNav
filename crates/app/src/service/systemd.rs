@@ -11,6 +11,7 @@
 //! only system-level state we touch is the linger flag.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
@@ -32,27 +33,65 @@ fn current_user() -> String {
         .unwrap_or_else(|_| "root".into())
 }
 
-/// Locate the `intelnav-node` binary the unit should `ExecStart`. We
-/// prefer the same binary the user installed (look up the running
-/// `intelnav` and assume the daemon lives next to it). Falls back to
-/// `intelnav-node` on $PATH.
-fn locate_node_binary() -> PathBuf {
+/// Locate the `intelnav-node` binary as an *absolute* path. systemd's
+/// ExecStart path resolution is restrictive (limited PATH search), so
+/// passing a bare name fails with status 203/EXEC.
+///
+/// Returns `Err` with an actionable message when the binary genuinely
+/// can't be found — the install bails before generating a unit that
+/// would just crash-loop.
+fn locate_node_binary() -> Result<PathBuf> {
+    // 1. Sibling of the running `intelnav` binary (the common case
+    //    when the user just `cargo build --release`'d both).
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(parent) = self_exe.parent() {
             let candidate = parent.join("intelnav-node");
-            if candidate.exists() { return candidate; }
+            if candidate.exists() { return Ok(candidate); }
         }
     }
-    // Fall back to PATH lookup at runtime — systemd will resolve
-    // it via $PATH at unit start.
-    PathBuf::from("intelnav-node")
+    // 2. Anywhere on $PATH, but resolved to absolute now (not deferred
+    //    to systemd's restricted PATH at start time).
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let candidate = PathBuf::from(dir).join("intelnav-node");
+            if candidate.exists() { return Ok(candidate); }
+        }
+    }
+    anyhow::bail!(
+        "couldn't find `intelnav-node` next to the running `intelnav` or on $PATH. \
+         Build it first: `cargo build --release -p intelnav-node`"
+    )
 }
 
-fn render_unit() -> String {
-    let exec = locate_node_binary();
-    format!(
+/// Forward env vars the daemon needs at runtime. systemd starts user
+/// units with a minimal environment — your shell's `INTELNAV_*` vars
+/// (notably `INTELNAV_LIBLLAMA_DIR`) won't be there unless we copy
+/// them into the unit explicitly.
+fn forwarded_env() -> Vec<(String, String)> {
+    let keys = [
+        "INTELNAV_LIBLLAMA_DIR",
+        "INTELNAV_LIBP2P_LISTEN",
+        "INTELNAV_CHUNKS_ADDR",
+        "INTELNAV_FORWARD_ADDR",
+        "INTELNAV_MODELS_DIR",
+        "INTELNAV_DEVICE",
+        "INTELNAV_BOOTSTRAP",
+    ];
+    keys.iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+}
+
+fn render_unit() -> Result<String> {
+    let exec = locate_node_binary()?;
+    let env_lines: String = forwarded_env()
+        .iter()
+        .map(|(k, v)| format!("Environment={k}={v}\n"))
+        .collect();
+    Ok(format!(
         "[Unit]\n\
          Description=IntelNav swarm node\n\
+         Documentation=https://intelnav.net\n\
          After=network-online.target\n\
          Wants=network-online.target\n\
          \n\
@@ -61,11 +100,11 @@ fn render_unit() -> String {
          ExecStart={exec}\n\
          Restart=on-failure\n\
          RestartSec=5\n\
-         \n\
+         {env_lines}\n\
          [Install]\n\
          WantedBy=default.target\n",
         exec = exec.display(),
-    )
+    ))
 }
 
 pub fn status() -> ServiceStatus {
@@ -89,12 +128,13 @@ pub fn status() -> ServiceStatus {
 }
 
 pub async fn install() -> Result<()> {
+    let unit = render_unit()?;
     let path = user_unit_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create {}", parent.display()))?;
     }
-    std::fs::write(&path, render_unit())
+    std::fs::write(&path, unit)
         .with_context(|| format!("write {}", path.display()))?;
     info!(unit = %path.display(), "wrote systemd user unit");
 
@@ -114,6 +154,16 @@ pub async fn install() -> Result<()> {
     // Reload + enable + start. None of these need root for user units.
     run("systemctl", ["--user", "daemon-reload"]).await?;
     run("systemctl", ["--user", "enable", "--now", UNIT_NAME]).await?;
+
+    // Wait briefly for the unit to actually reach Active. A returning
+    // `enable --now` only means systemd accepted the start command —
+    // the unit may immediately exit (binary missing, env wrong, ...).
+    if !wait_for_active(Duration::from_secs(4)).await {
+        let logs = recent_journal().await.unwrap_or_default();
+        anyhow::bail!(
+            "service installed but failed to start. Recent journal:\n{logs}"
+        );
+    }
     info!("intelnav-node service installed and started");
     Ok(())
 }
@@ -128,6 +178,36 @@ pub async fn uninstall() -> Result<()> {
     let _ = run("systemctl", ["--user", "daemon-reload"]).await;
     info!("intelnav-node service uninstalled");
     Ok(())
+}
+
+async fn wait_for_active(budget: Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        let ok = std::process::Command::new("systemctl")
+            .args(["--user", "is-active", UNIT_NAME])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok { return true; }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+async fn recent_journal() -> Option<String> {
+    let out = Command::new("journalctl")
+        .args(["--user", "-u", UNIT_NAME, "--no-pager", "-n", "10"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() { return None; }
+    let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+    // Trim each line to a reasonable width so the TUI message stays readable.
+    let trimmed: String = s.lines().map(|l| {
+        if l.len() > 140 { format!("{}…", &l[..140]) } else { l.to_string() }
+    }).collect::<Vec<_>>().join("\n");
+    s = trimmed;
+    Some(s)
 }
 
 async fn run<I, S>(program: &str, args: I) -> Result<()>
