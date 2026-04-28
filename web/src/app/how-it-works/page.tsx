@@ -4,9 +4,12 @@ export const metadata = { title: "How it works" };
 
 export default function HowItWorks() {
     return (
-        <article className="space-y-10">
+        <article className="max-w-3xl mx-auto px-6 py-16 space-y-12">
             <header>
-                <h1 className="text-3xl font-bold tracking-tight" style={{ color: "var(--strong)" }}>
+                <p className="text-sm tracking-wider uppercase mb-3" style={{ color: "var(--accent)" }}>
+                    Walkthrough
+                </p>
+                <h1 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight" style={{ color: "var(--strong)" }}>
                     How it works
                 </h1>
                 <p className="mt-2" style={{ color: "var(--muted)" }}>
@@ -15,7 +18,7 @@ export default function HowItWorks() {
             </header>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     1. The user types a prompt
                 </h2>
                 <p>
@@ -27,7 +30,7 @@ export default function HowItWorks() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     2. The DHT chooses a chain
                 </h2>
                 <p>
@@ -41,7 +44,7 @@ export default function HowItWorks() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     3. Hidden states flow through the chain
                 </h2>
                 <pre
@@ -76,7 +79,7 @@ export default function HowItWorks() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     4. Tokens stream back to the user
                 </h2>
                 <p>
@@ -87,7 +90,7 @@ export default function HowItWorks() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     Failure handling
                 </h2>
                 <ul className="space-y-2 list-disc pl-5" style={{ color: "var(--fg)" }}>

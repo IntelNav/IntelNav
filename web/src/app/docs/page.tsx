@@ -4,9 +4,12 @@ export const metadata = { title: "Docs" };
 
 export default function Docs() {
     return (
-        <article className="space-y-10">
+        <article className="max-w-3xl mx-auto px-6 py-16 space-y-12">
             <header>
-                <h1 className="text-3xl font-bold tracking-tight" style={{ color: "var(--strong)" }}>
+                <p className="text-sm tracking-wider uppercase mb-3" style={{ color: "var(--accent)" }}>
+                    Reference
+                </p>
+                <h1 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight" style={{ color: "var(--strong)" }}>
                     Docs
                 </h1>
                 <p className="mt-2" style={{ color: "var(--muted)" }}>
@@ -16,7 +19,7 @@ export default function Docs() {
             </header>
 
             <section>
-                <h2 className="text-xl font-semibold mb-3" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight mb-4" style={{ color: "var(--strong)" }}>
                     Onboarding
                 </h2>
                 <ul className="space-y-3">
@@ -27,7 +30,7 @@ export default function Docs() {
             </section>
 
             <section>
-                <h2 className="text-xl font-semibold mb-3" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight mb-4" style={{ color: "var(--strong)" }}>
                     Architecture &amp; specs
                 </h2>
                 <ul className="space-y-3">
@@ -38,7 +41,7 @@ export default function Docs() {
             </section>
 
             <section>
-                <h2 className="text-xl font-semibold mb-3" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight mb-4" style={{ color: "var(--strong)" }}>
                     Contributing
                 </h2>
                 <ul className="space-y-3">

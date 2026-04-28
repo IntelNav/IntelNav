@@ -5,9 +5,12 @@ export const metadata = { title: "Install" };
 
 export default function Install() {
     return (
-        <article className="space-y-10">
+        <article className="max-w-3xl mx-auto px-6 py-16 space-y-12">
             <header>
-                <h1 className="text-3xl font-bold tracking-tight" style={{ color: "var(--strong)" }}>
+                <p className="text-sm tracking-wider uppercase mb-3" style={{ color: "var(--accent)" }}>
+                    Get started
+                </p>
+                <h1 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight" style={{ color: "var(--strong)" }}>
                     Install
                 </h1>
                 <p className="mt-2" style={{ color: "var(--muted)" }}>
@@ -16,7 +19,7 @@ export default function Install() {
             </header>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     One-liner
                 </h2>
                 <Code prompt>{`curl -fsSL https://intelnav.net/install.sh | sh`}</Code>
@@ -30,7 +33,7 @@ export default function Install() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     From source
                 </h2>
                 <p>
@@ -61,7 +64,7 @@ bash scripts/install-libllama.sh
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     First launch
                 </h2>
                 <p>
@@ -90,7 +93,7 @@ bash scripts/install-libllama.sh
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     Supported backends
                 </h2>
                 <div className="overflow-x-auto">

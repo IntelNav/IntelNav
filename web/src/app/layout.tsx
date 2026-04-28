@@ -1,7 +1,29 @@
 import type { Metadata } from "next";
+import { Inter, Crimson_Pro, JetBrains_Mono } from "next/font/google";
 import { Nav } from "@/components/Nav";
 import { Footer } from "@/components/Footer";
 import "./globals.css";
+
+// Self-host through next/font: no FOUT, no privacy-leaking external
+// requests at runtime. Crimson Pro stands in for Tiempos on the
+// headline, Inter Variable for body text, JetBrains Mono for code.
+const inter = Inter({
+    subsets: ["latin"],
+    display: "swap",
+    variable: "--font-sans",
+});
+const crimson = Crimson_Pro({
+    subsets: ["latin"],
+    display: "swap",
+    variable: "--font-serif",
+    weight: ["400", "500", "600"],
+});
+const mono = JetBrains_Mono({
+    subsets: ["latin"],
+    display: "swap",
+    variable: "--font-mono",
+    weight: ["400", "500"],
+});
 
 export const metadata: Metadata = {
     metadataBase: new URL("https://intelnav.net"),
@@ -25,17 +47,20 @@ export const metadata: Metadata = {
 
 export const viewport = {
     themeColor: [
-        { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-        { media: "(prefers-color-scheme: dark)",  color: "#0d1117" },
+        { media: "(prefers-color-scheme: light)", color: "#faf9f5" },
+        { media: "(prefers-color-scheme: dark)",  color: "#181612" },
     ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
     return (
-        <html lang="en">
-            <body className="antialiased">
+        <html
+            lang="en"
+            className={`${inter.variable} ${crimson.variable} ${mono.variable}`}
+        >
+            <body className="font-sans antialiased">
                 <Nav />
-                <main className="max-w-3xl mx-auto px-6 py-12">{children}</main>
+                <main>{children}</main>
                 <Footer />
             </body>
         </html>

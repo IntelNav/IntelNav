@@ -4,9 +4,12 @@ export const metadata = { title: "Community" };
 
 export default function Community() {
     return (
-        <article className="space-y-10">
+        <article className="max-w-3xl mx-auto px-6 py-16 space-y-12">
             <header>
-                <h1 className="text-3xl font-bold tracking-tight" style={{ color: "var(--strong)" }}>
+                <p className="text-sm tracking-wider uppercase mb-3" style={{ color: "var(--accent)" }}>
+                    Join in
+                </p>
+                <h1 className="font-serif text-4xl sm:text-5xl leading-tight tracking-tight" style={{ color: "var(--strong)" }}>
                     Community
                 </h1>
                 <p className="mt-2" style={{ color: "var(--muted)" }}>
@@ -17,7 +20,7 @@ export default function Community() {
             </header>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     Where to find us
                 </h2>
                 <ul className="space-y-3">
@@ -40,7 +43,7 @@ export default function Community() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     How to contribute
                 </h2>
                 <p>
@@ -88,7 +91,7 @@ export default function Community() {
             </section>
 
             <section className="space-y-4">
-                <h2 className="text-xl font-semibold" style={{ color: "var(--strong)" }}>
+                <h2 className="font-serif text-2xl tracking-tight" style={{ color: "var(--strong)" }}>
                     License
                 </h2>
                 <p style={{ color: "var(--muted)" }}>
