@@ -66,7 +66,6 @@ impl LayerRange {
 }
 
 /// Peer role — decides routing preference (volunteers outrank cloud).
-/// Specified in `specs/shard-registry-v1.md` §5.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
