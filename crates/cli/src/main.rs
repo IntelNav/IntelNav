@@ -9,7 +9,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use intelnav_app::{cmd, tui};
+use intelnav_app::{cmd, firstrun, gate, tui};
 use intelnav_core::{Config, RunMode};
 
 #[derive(Parser)]
@@ -81,10 +81,15 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Auto-init on first run: writes config.toml + peer.key + models_dir
+    // if any are missing. Idempotent on subsequent runs.
+    let init_report = firstrun::ensure_initialized()?;
+
     let mut config = Config::load()?;
     if let Some(m) = cli.mode {
         config.mode = m;
     }
+    let _ = init_report;
 
     let is_tui = matches!(cli.command, None | Some(Command::Chat { .. }));
     let level = match cli.verbose {
@@ -124,6 +129,16 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Command::Chat { model: None, quorum: None, allow_wan: false }) {
         Command::Chat { model, quorum, allow_wan } => {
+            // Mandatory contribution gate: chat is unlocked only when
+            // the user is hosting at least one slice OR has explicitly
+            // opted into DHT-only relay mode.
+            match gate::check(&config) {
+                gate::GateState::Pass(_) => {}
+                gate::GateState::NeedsContribution { suggestion } => {
+                    print_gate_block(suggestion);
+                    return Ok(());
+                }
+            }
             tui::run(&config, config.mode, model, quorum, allow_wan).await
         }
         Command::Ask { model, prompt } => {
@@ -143,4 +158,37 @@ async fn main() -> Result<()> {
         Command::Doctor          => cmd::doctor(&config).await,
         Command::Init { force }  => cmd::init(force).await,
     }
+}
+
+/// Pre-TUI explainer for users who haven't picked a slice yet.
+/// Prints to stderr (TUI hasn't started) so a stale tracing line can't
+/// race with us.
+fn print_gate_block(suggestion: Option<intelnav_app::gate::Suggestion>) {
+    eprintln!();
+    eprintln!("\x1b[1mIntelNav requires every peer to contribute.\x1b[0m");
+    eprintln!();
+    eprintln!("You're not hosting a slice yet. Two ways forward:");
+    eprintln!();
+    if let Some(s) = suggestion {
+        let (start, end) = s.range;
+        let fit_label = match s.fit {
+            intelnav_app::catalog::Fit::Fits  => "comfortable",
+            intelnav_app::catalog::Fit::Tight => "tight (close to RAM limit)",
+            intelnav_app::catalog::Fit::TooBig => "too big",
+        };
+        eprintln!("  1. \x1b[32mHost a slice\x1b[0m — recommended for your hardware:");
+        eprintln!("       \x1b[1m{}\x1b[0m  layers [{start}..{end})  ({fit_label})",
+            s.entry.display_name);
+        eprintln!("       Run \x1b[1mintelnav contribute --slug {} --range {start}-{end}\x1b[0m",
+            s.entry.id);
+    } else {
+        eprintln!("  1. \x1b[33mHost a slice\x1b[0m — your hardware is below the catalog floor.");
+        eprintln!("       Pick \"relay only\" instead, or upgrade to ≥4GB free RAM.");
+    }
+    eprintln!();
+    eprintln!("  2. \x1b[36mRelay only\x1b[0m — daemon participates in the DHT but");
+    eprintln!("       runs no inference. Set \x1b[1mrelay_only = true\x1b[0m in");
+    eprintln!("       ~/.config/intelnav/config.toml or run:");
+    eprintln!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
+    eprintln!();
 }

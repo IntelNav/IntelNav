@@ -1800,6 +1800,7 @@ dependencies = [
  "intelnav-model-store",
  "intelnav-net",
  "intelnav-runtime",
+ "intelnav-wire",
  "libc",
  "ratatui",
  "reqwest",

@@ -29,6 +29,19 @@ is the chunker / stitcher / fetcher.
 crate or a binary lives here. It's a library so two binaries can
 share it: `cli` is the chat client, `node` is the host daemon.
 
+The user-facing modules in `app` are:
+
+- `firstrun` / `bootstrap` — auto-generate config, fetch seeds.
+- `gate` — mandatory contribution gate with hardware-fit suggestion.
+- `swarm_node` — daemon spawn (libp2p + announce loop + drain
+  watchdog + chunk + forward + control RPC, all in-process).
+- `forward_server` — inference TCP listener with control-state
+  gating; refuses new chains on Draining/Stopped slices.
+- `chain_driver` — multi-candidate `ChainTarget` with per-hop
+  failover ranked by TCP probe latency.
+- `control` — Unix-socket RPC between TUI and daemon.
+- `service` — pkexec-driven systemd user-unit installer.
+
 ## Two binaries, one library
 
 The split exists so closing the chat window can't take you off the

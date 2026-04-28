@@ -5,50 +5,72 @@
 IntelNav splits a model into layer-range slices, scatters them across
 volunteer hardware, and streams hidden states through the chain to
 answer a prompt. No single peer holds the whole model. Slices are
-addressed on a Kademlia DHT, prompts are encrypted end-to-end, and
-the only thing a contributor commits to is the slice they have RAM
-for.
+addressed on a Kademlia DHT, and the only thing a contributor commits
+to is the slice they have RAM for.
 
 ```
    prompt ──► [you: layers 0..k) ──► peer A: [k..m) ──► peer B: [m..N) ──► tokens
 ```
 
+**Every peer must contribute.** You either host a slice or run as a
+DHT relay. There is no leech mode — without contribution, the swarm
+collapses into the people running it.
+
 ## Two binaries
 
 | binary          | what it does                                                         |
 | --------------- | -------------------------------------------------------------------- |
-| `intelnav`      | Chat client. Reads the DHT to find models the swarm can serve. No host duties. |
-| `intelnav-node` | Host daemon. Holds slices, serves chunks, accepts inference forwards. Long-running. |
+| `intelnav`      | Chat client. TUI for picking models, hosting slices, and managing the daemon. |
+| `intelnav-node` | Host daemon. Holds slices, serves chunks, accepts inference forwards. Runs as a systemd user service. |
 
-You run `intelnav` whenever you want to chat. You run `intelnav-node`
-in the background (systemd unit, screen session, whatever) for as long
-as you want to contribute. They share the same identity (`~/.local/share/intelnav/peer.key`)
-and the same `models_dir`, so they cooperate without IPC.
+Both share the same identity (`~/.local/share/intelnav/peer.key`) and
+`models_dir`, so they cooperate without IPC. The chat client also
+talks to the daemon over a Unix socket (`control.sock`) for
+status/leave/service operations.
 
-## Quickstart — chat against the swarm
+## Quickstart
 
 ```bash
-bash scripts/provision.sh                # system deps + rust
-cargo build --release -p intelnav-cli    # build the chat binary
+bash scripts/provision.sh                # system deps + rust + libllama
+cargo build --release -p intelnav-cli -p intelnav-node
 ./target/release/intelnav                # opens the TUI
 ```
 
-Inside the TUI: `/models` lists three things — what you have cached,
-what the swarm is serving, and what you can pull from HuggingFace.
-`Enter` runs / joins. `c` (on a hub or swarm row) starts a contribute
-flow that hands off to your `intelnav-node`.
+First launch:
 
-## Quickstart — host a slice
+1. The TUI generates `~/.config/intelnav/config.toml`, an Ed25519
+   identity, and an empty `models_dir`. No file editing required.
+2. It fetches a freshly-signed bootstrap seed list from the project's
+   GitHub release and caches it locally.
+3. You're shown a contribution gate. Pick a slice your hardware can
+   host, or opt into relay-only mode. Chat is unlocked once you've
+   chosen.
+4. Selecting a slice runs the contribute flow (download/split or
+   swarm pull), then asks `pkexec` once for permission to install
+   `intelnav-node` as a user service. The daemon survives reboots
+   from then on — no `systemctl` to type, ever.
 
-```bash
-cargo build --release -p intelnav-node
-./target/release/intelnav-node           # runs forever
-```
+Inside the TUI:
 
-The node scans `<models_dir>/.shards/*/kept_ranges.json` to learn
-which slices it owns, dials the bootstrap peers from your config,
-publishes provider records to the DHT every 5 minutes, and accepts
-inbound chunk and forward connections.
+- `/models` — three-source picker: cached locally, advertised on the
+  swarm, available from HuggingFace.
+- `/hosting` — slices you currently host with active chain counts;
+  drain a slice gracefully with `/leave <cid> <start> <end>`.
+- `/service status|install|uninstall` — manage the systemd unit.
+
+## What runs where
+
+`intelnav-node` (one process, one systemd unit) hosts:
+
+- The libp2p swarm with periodic provider record re-announce (5 min).
+- The chunk HTTP server (multi-shard, keyed by manifest_cid).
+- The forward TCP listener (lazy-loads each slice's GGUF on first
+  request, stitches subsets when only chunks are on disk).
+- A control RPC over `control.sock` so the chat client can drive
+  hosting from the TUI.
+- A drain watchdog that force-stops Draining slices whose grace
+  period (5 min) elapses, so a wedged consumer can't pin a host
+  forever.
 
 ## Layout
 
@@ -60,18 +82,26 @@ intelnav/
 │   ├── crypto/           Ed25519, X25519, AES-256-GCM
 │   ├── ggml/             libllama loader + GPU probe
 │   ├── runtime/          layer-range inference (ggml-backed)
-│   ├── model-store/      GGUF chunker, stitcher, fetcher, optional serve
-│   ├── net/              libp2p + Kademlia DHT shard index, mDNS, registry
-│   ├── app/              substantive code: TUI, drivers, contribute paths
+│   ├── model-store/      GGUF chunker, stitcher, fetcher, multi-shard chunk server
+│   ├── net/              libp2p + Kademlia DHT shard index
+│   ├── app/              substantive code: TUI, drivers, contribute paths,
+│   │                     daemon-hosted forward + chunk + control servers
 │   ├── cli/              `intelnav` — chat client (thin binary over `app`)
 │   ├── node/             `intelnav-node` — host daemon (thin binary over `app`)
 │   └── registry/         optional bootstrap coordinator
 ├── docs/
 │   ├── architecture.md     workspace + protocol overview
 │   ├── onboarding-host.md  how to host slices
-│   └── onboarding-user.md  how to chat without hosting
+│   └── onboarding-user.md  how to chat (still mandatory: pick a slice or relay)
 └── specs/                wire protocol + registry specs
 ```
+
+## Platforms
+
+- **Linux** — systemd user units, single `pkexec` elevation for
+  `loginctl enable-linger`. The only supported platform for now
+  while the flow gets shaken out in the wild. macOS and Windows
+  will follow once Linux is stable.
 
 ## License
 

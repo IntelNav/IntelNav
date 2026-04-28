@@ -19,18 +19,24 @@ use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 
 use intelnav_runtime::{
-    build_chat_prompt, run_turn, run_turn_spec, Chain, ChainCfg, ChatTurn,
+    build_chat_prompt, run_turn, run_turn_spec, Chain, ChainCfg, ChainError, ChatTurn,
     DevicePref, Dtype, ModelHandle, ModelKind, SamplingCfg, SpecCfg, Tok,
 };
 
 use crate::delta::{ChatMessage, Delta};
 use crate::local::LocalModel;
 
-/// Configured chain target (already parsed from strings).
+/// Configured chain target with per-hop failover candidates.
+///
+/// `peers[i]` is the *currently active* socket for hop `i`;
+/// `alternates[i]` holds backup providers ranked by latency (freshest
+/// first). [`failover`] swaps `peers[i]` in and out of `alternates[i]`
+/// so the driver can retry a connect without rebuilding the whole plan.
 #[derive(Clone, Debug)]
 pub struct ChainTarget {
     pub peers:  Vec<SocketAddr>,
     pub splits: Vec<u16>,
+    pub alternates: Vec<Vec<SocketAddr>>,
 }
 
 /// Speculative-decoding draft config: path to a small GGUF (Qwen2
@@ -70,43 +76,152 @@ impl ChainTarget {
                 .with_context(|| format!("peer[{i}] = `{p}` is not a valid host:port"))?;
             parsed.push(addr);
         }
-        Ok(Self { peers: parsed, splits: splits.to_vec() })
+        let alternates = vec![Vec::new(); parsed.len()];
+        Ok(Self { peers: parsed, splits: splits.to_vec(), alternates })
     }
 
-    /// Build a chain target by greedily picking one provider per
-    /// covered range. `ranges` should be the SwarmModel's range
-    /// coverage (start, end, providers); each range with at least
-    /// one provider that publishes a `forward_url` becomes one peer
-    /// hop. Returns `Err` if the swarm doesn't cover every range.
+    /// Build a chain target by ranking providers per range.
+    ///
+    /// For each range we keep up to [`MAX_CANDIDATES_PER_HOP`] providers,
+    /// freshest-first, and put the top one in `peers` and the rest in
+    /// `alternates`. This is what enables [`failover`] without a fresh
+    /// DHT round trip.
+    ///
+    /// This is a *synchronous* fallback ranking by `minted_at`. For
+    /// latency-aware ranking call [`ChainTarget::from_swarm_with_probe`]
+    /// instead — it issues a parallel TCP probe and sorts by RTT.
     pub fn from_swarm(
         ranges: &[(u16, u16, Vec<intelnav_net::ProviderRecord>)],
     ) -> Result<Self> {
         if ranges.is_empty() {
             return Err(anyhow!("no ranges to assemble"));
         }
-        let mut peers  = Vec::with_capacity(ranges.len());
-        let mut splits = Vec::with_capacity(ranges.len());
+        let mut peers      = Vec::with_capacity(ranges.len());
+        let mut splits     = Vec::with_capacity(ranges.len());
+        let mut alternates = Vec::with_capacity(ranges.len());
         for (start, _end, providers) in ranges {
-            let chosen = providers.iter()
-                .filter(|p| p.forward_url.is_some())
-                .max_by_key(|p| p.minted_at)
-                .ok_or_else(|| anyhow!(
+            // Rank providers freshest-first by minted_at, parse the
+            // forward_url, dedupe so a peer republishing twice doesn't
+            // waste a slot, cap at MAX_CANDIDATES_PER_HOP.
+            let mut ranked: Vec<(u64, SocketAddr)> = providers.iter()
+                .filter_map(|p| {
+                    let u = p.forward_url.as_ref()?;
+                    let addr: SocketAddr = u.parse().ok()?;
+                    Some((p.minted_at, addr))
+                })
+                .collect();
+            ranked.sort_by(|a, b| b.0.cmp(&a.0));
+            let mut sockets: Vec<SocketAddr> = ranked.into_iter()
+                .map(|(_, a)| a)
+                .take(MAX_CANDIDATES_PER_HOP)
+                .collect();
+            sockets.dedup();
+            if sockets.is_empty() {
+                return Err(anyhow!(
                     "no provider with a forward_url for layers [{start}..{_end})"
-                ))?;
-            let url = chosen.forward_url.as_ref().unwrap();
-            let addr: SocketAddr = url.parse()
-                .with_context(|| format!("provider forward_url `{url}` is not host:port"))?;
-            peers.push(addr);
+                ));
+            }
+            let primary = sockets.remove(0);
+            peers.push(primary);
             splits.push(*start);
+            alternates.push(sockets);
         }
-        Ok(Self { peers, splits })
+        Ok(Self { peers, splits, alternates })
+    }
+
+    /// Promote the next alternate for hop `i` into `peers[i]`. Returns
+    /// `true` if a swap happened, `false` if no alternates remain.
+    pub fn failover(&mut self, i: usize) -> bool {
+        let Some(alts) = self.alternates.get_mut(i) else { return false; };
+        if alts.is_empty() { return false; }
+        let next = alts.remove(0);
+        if let Some(slot) = self.peers.get_mut(i) {
+            *slot = next;
+            return true;
+        }
+        false
+    }
+
+    /// True when at least one hop still has a backup we haven't tried.
+    pub fn has_alternates(&self) -> bool {
+        self.alternates.iter().any(|a| !a.is_empty())
     }
 
     pub fn summary(&self) -> String {
         let peers: Vec<String> = self.peers.iter().map(|a| a.to_string()).collect();
-        format!("{} · splits={:?}", peers.join(","), self.splits)
+        let alts: usize = self.alternates.iter().map(|a| a.len()).sum();
+        if alts == 0 {
+            format!("{} · splits={:?}", peers.join(","), self.splits)
+        } else {
+            format!("{} · splits={:?} · {alts} alt", peers.join(","), self.splits)
+        }
     }
 }
+
+impl ChainTarget {
+    /// Latency-aware version of [`from_swarm`]. Probes every candidate
+    /// in parallel via a TCP handshake (cached for 60s), then ranks
+    /// reachable peers by RTT and uses freshness as a tiebreaker.
+    ///
+    /// Picks "fastest reachable peer" as primary, with the rest of the
+    /// reachable peers (RTT-ranked) as alternates. Unreachable peers
+    /// drop off the list — there's no point keeping them.
+    pub async fn from_swarm_with_probe(
+        ranges: &[(u16, u16, Vec<intelnav_net::ProviderRecord>)],
+    ) -> Result<Self> {
+        if ranges.is_empty() {
+            return Err(anyhow!("no ranges to assemble"));
+        }
+        let mut peers      = Vec::with_capacity(ranges.len());
+        let mut splits     = Vec::with_capacity(ranges.len());
+        let mut alternates = Vec::with_capacity(ranges.len());
+
+        for (start, _end, providers) in ranges {
+            let mut candidates: Vec<(u64, SocketAddr)> = providers.iter()
+                .filter_map(|p| {
+                    let u = p.forward_url.as_ref()?;
+                    let addr: SocketAddr = u.parse().ok()?;
+                    Some((p.minted_at, addr))
+                })
+                .collect();
+            candidates.sort_by(|a, b| b.0.cmp(&a.0));
+            let addrs: Vec<SocketAddr> = candidates.iter().map(|(_, a)| *a).collect();
+            let probe_results = crate::probe_latency::probe_many(&addrs).await;
+            // Pair each addr with its probe + freshness rank, then sort by
+            // (reachable, lowest RTT, freshest).
+            let mut ranked: Vec<(u64, SocketAddr)> = addrs.iter().zip(probe_results.iter())
+                .zip(candidates.iter())
+                .filter_map(|((addr, p), (mint, _))| {
+                    p.rtt.map(|_rtt| (crate::probe_latency::score(p), *addr, *mint))
+                })
+                .map(|(score, addr, _mint)| (score, addr))
+                .collect();
+            ranked.sort_by_key(|(score, _)| *score);
+            let mut sockets: Vec<SocketAddr> = ranked.into_iter()
+                .map(|(_, a)| a)
+                .take(MAX_CANDIDATES_PER_HOP)
+                .collect();
+            sockets.dedup();
+            if sockets.is_empty() {
+                return Err(anyhow!(
+                    "no reachable provider for layers [{start}..{_end})"
+                ));
+            }
+            let primary = sockets.remove(0);
+            peers.push(primary);
+            splits.push(*start);
+            alternates.push(sockets);
+        }
+        Ok(Self { peers, splits, alternates })
+    }
+}
+
+/// Cap on candidates kept per hop. 1 primary + 2 alternates is enough
+/// in practice — if all three fail something bigger is wrong.
+pub const MAX_CANDIDATES_PER_HOP: usize = 3;
+
+/// Cap on how many failover swaps we try inside one connect attempt.
+const MAX_FAILOVER_ATTEMPTS: usize = 4;
 
 /// Cached-model driver — same shape as `LocalDriver` but its forward
 /// pass funnels through a TCP peer chain.
@@ -230,7 +345,7 @@ impl ChainDriver {
         cfg:      SamplingCfg,
         tx:       mpsc::UnboundedSender<Delta>,
     ) -> Result<()> {
-        let target = self.target.lock().unwrap().clone()
+        let mut target = self.target.lock().unwrap().clone()
             .ok_or_else(|| anyhow!(
                 "no peer chain configured — use /peers to set one"
             ))?;
@@ -254,18 +369,15 @@ impl ChainDriver {
         let loaded = slot.as_mut().ok_or_else(|| anyhow!("model unloaded mid-flight"))?;
         let n_blocks = loaded.handle.block_count() as u16;
 
-        let chain_cfg = ChainCfg {
-            peers:           target.peers.clone(),
-            splits:          target.splits.clone(),
-            proto_ver:       1,
-            model_cid:       model.name.clone(),
-            max_seq:         2048,
-            step_timeout:    Duration::from_secs(30),
-            connect_timeout: Duration::from_secs(10),
-            wire_dtype:      *self.wire_dtype.lock().unwrap(),
-        };
-        let mut chain = Chain::connect(chain_cfg, n_blocks).await
-            .map_err(|e| anyhow!("{e}"))?;
+        let mut chain = connect_with_failover(
+            &mut target,
+            &model,
+            n_blocks,
+            *self.wire_dtype.lock().unwrap(),
+            tx.clone(),
+        ).await?;
+        // Persist any swap so subsequent turns reuse the working route.
+        *self.target.lock().unwrap() = Some(target);
 
         let tx_cb = tx.clone();
         let run_result = if let Some(dc) = draft_cfg {
@@ -333,6 +445,58 @@ impl ChainDriver {
         Ok(())
     }
 
+}
+
+/// Try to open a chain, swapping in alternates for any hop whose connect
+/// fails. Returns the live `Chain` on success, or the last error after
+/// exhausting [`MAX_FAILOVER_ATTEMPTS`] swaps.
+///
+/// Surfaces each failover attempt as a `Delta::Status` so the TUI can
+/// show "swapping peer 2 → backup" without a separate log channel.
+async fn connect_with_failover(
+    target: &mut ChainTarget,
+    model:  &LocalModel,
+    n_blocks: u16,
+    wire_dtype: Dtype,
+    tx: mpsc::UnboundedSender<Delta>,
+) -> Result<Chain> {
+    let mut attempts = 0;
+    loop {
+        let cfg = ChainCfg {
+            peers:           target.peers.clone(),
+            splits:          target.splits.clone(),
+            proto_ver:       1,
+            model_cid:       model.name.clone(),
+            max_seq:         2048,
+            step_timeout:    Duration::from_secs(30),
+            connect_timeout: Duration::from_secs(10),
+            wire_dtype,
+        };
+        match Chain::connect(cfg, n_blocks).await {
+            Ok(chain) => return Ok(chain),
+            Err(e) => {
+                attempts += 1;
+                let failed_index = match &e {
+                    ChainError::Connect   { index, .. }
+                    | ChainError::Timeout   { index, .. }
+                    | ChainError::Handshake { index, .. }
+                    | ChainError::Aborted   { index, .. }
+                    | ChainError::Dropped   { index, .. } => Some(*index),
+                    ChainError::Other(_) => None,
+                };
+                let Some(i) = failed_index else { return Err(anyhow!("{e}")); };
+                if attempts > MAX_FAILOVER_ATTEMPTS || !target.failover(i) {
+                    return Err(anyhow!("{e}"));
+                }
+                let _ = tx.send(Delta::Token(format!(
+                    "[swarm] hop {i} unreachable, swapping to backup\n"
+                )));
+            }
+        }
+    }
+}
+
+impl ChainDriver {
     fn ensure_draft(&self, dc: &DraftTarget) -> Result<()> {
         let mut slot = self.draft_slot.lock().unwrap();
         if let Some(l) = slot.as_ref() {

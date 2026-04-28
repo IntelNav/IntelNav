@@ -629,9 +629,98 @@ impl AppState {
             "peers" => self.handle_peers_cmd(parts),
             "draft" => self.handle_draft_cmd(parts),
             "wire"  => self.handle_wire_cmd(parts),
+            "hosting" => self.handle_hosting_cmd(),
+            "leave" => self.handle_leave_cmd(parts),
+            "service" => self.handle_service_cmd(parts),
             "quit" | "exit" => { self.should_quit = true; }
             other => self.history.push(Turn::system(format!("unknown command: /{other}"))),
         }
+    }
+
+    /// `/hosting` — query the daemon's control RPC and render the list
+    /// of slices we're announcing, plus active chain counts.
+    fn handle_hosting_cmd(&mut self) {
+        use crate::control;
+        let sock = control::default_socket_path();
+        let req = control::Request::ListHosted;
+        let result: Result<control::Response, _> = futures::executor::block_on(async {
+            control::call(&sock, req).await
+        });
+        let msg = match result {
+            Ok(control::Response::Hosted { slices }) => {
+                if slices.is_empty() {
+                    String::from("hosting: nothing yet — open /models and press `c` on a row to contribute.")
+                } else {
+                    let mut buf = String::from("hosting:\n");
+                    for s in &slices {
+                        let state = match s.state {
+                            control::SliceStatus::Announcing => "active",
+                            control::SliceStatus::Draining   => "draining",
+                            control::SliceStatus::Stopped    => "stopped",
+                        };
+                        let label = if s.display_name.is_empty() {
+                            s.cid.as_str()
+                        } else { s.display_name.as_str() };
+                        buf.push_str(&format!(
+                            "  {label:<32} layers [{:>3}..{:>3}) · {state} · {} active\n",
+                            s.start, s.end, s.active_chains,
+                        ));
+                    }
+                    buf.push_str("\n  /leave <cid> <start> <end> to drain a slice gracefully.");
+                    buf
+                }
+            }
+            Ok(control::Response::Error { message }) => format!("hosting: daemon refused: {message}"),
+            Ok(_) => "hosting: unexpected daemon reply".into(),
+            Err(_) => "hosting: daemon not reachable. /service install or run `intelnav-node`.".into(),
+        };
+        self.history.push(Turn::system(msg));
+    }
+
+    /// `/leave <cid> <start> <end>` — graceful drain via daemon RPC.
+    fn handle_leave_cmd<'a, I: Iterator<Item = &'a str>>(&mut self, mut parts: I) {
+        let cid = parts.next().map(str::to_string);
+        let start = parts.next().and_then(|s| s.parse::<u16>().ok());
+        let end   = parts.next().and_then(|s| s.parse::<u16>().ok());
+        let (Some(cid), Some(start), Some(end)) = (cid, start, end) else {
+            self.history.push(Turn::system(
+                String::from("usage: /leave <cid> <start> <end>")));
+            return;
+        };
+        use crate::control;
+        let sock = control::default_socket_path();
+        let req = control::Request::Leave { cid: cid.clone(), start, end };
+        let result: Result<control::Response, _> = futures::executor::block_on(async {
+            control::call(&sock, req).await
+        });
+        let msg = match result {
+            Ok(control::Response::Leaving) => format!(
+                "leaving {cid} [{start}..{end}) — draining; in-flight chains will finish."
+            ),
+            Ok(control::Response::Error { message }) => format!("/leave failed: {message}"),
+            Ok(_) => "/leave: unexpected daemon reply".into(),
+            Err(e) => format!("/leave: daemon unreachable: {e}"),
+        };
+        self.history.push(Turn::system(msg));
+    }
+
+    /// `/service install|status|uninstall` — manage the systemd user unit.
+    fn handle_service_cmd<'a, I: Iterator<Item = &'a str>>(&mut self, mut parts: I) {
+        use crate::service;
+        let action = parts.next().unwrap_or("status");
+        let msg = match action {
+            "status" => format!("service: {:?}", service::status()),
+            "install" => match futures::executor::block_on(service::install()) {
+                Ok(())  => "service: installed and started.".into(),
+                Err(e)  => format!("service install: {e}"),
+            },
+            "uninstall" => match futures::executor::block_on(service::uninstall()) {
+                Ok(())  => "service: uninstalled.".into(),
+                Err(e)  => format!("service uninstall: {e}"),
+            },
+            other => format!("/service: unknown action `{other}` — install|status|uninstall"),
+        };
+        self.history.push(Turn::system(msg));
     }
 
     /// `/peers` — zero args: show current target. Two args: parse

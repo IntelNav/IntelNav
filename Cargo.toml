@@ -20,7 +20,7 @@ edition      = "2021"
 rust-version = "1.88"
 license      = "Apache-2.0"
 authors      = ["IntelNav Project"]
-homepage     = "https://intelnav.io"
+homepage     = "https://intelnav.net"
 repository   = "https://github.com/intelnav/intelnav"
 
 [workspace.dependencies]
@@ -82,7 +82,7 @@ intelnav-net     = { path = "crates/net" }
 intelnav-app     = { path = "crates/app" }
 intelnav-registry = { path = "crates/registry" }
 intelnav-runtime  = { path = "crates/runtime" }
-intelnav-model-store = { path = "crates/model-store" }
+intelnav-model-store = { path = "crates/model-store", features = ["serve"] }
 
 [profile.release]
 opt-level   = 3

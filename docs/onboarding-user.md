@@ -1,86 +1,130 @@
-# Onboarding — chat without hosting
+# Onboarding — first run
 
-You just want to use the swarm. You don't have spare hardware to
-contribute. This is what happens.
+You just downloaded `intelnav`. You don't know any of the file
+paths or commands. This is what running it for the first time
+looks like, and how to choose between **hosting a slice** and
+**relay-only mode**.
 
-## Prereqs
+## What's required
 
-- A built `intelnav` binary (`cargo build --release -p intelnav-cli`).
-- A libllama tarball at `INTELNAV_LIBLLAMA_DIR/bin/`. Run
-  `intelnav doctor` to confirm.
-- An identity (`intelnav init` if you've never run it before).
+- A built `intelnav` + `intelnav-node` binary
+  (`cargo build --release -p intelnav-cli -p intelnav-node`).
+- A libllama tarball at `INTELNAV_LIBLLAMA_DIR/bin/`.
+  `intelnav doctor` will tell you if it's missing.
 
-You do **not** need to host slices, run `intelnav-node`, or download
-any GGUFs.
+You do **not** need to:
 
-## Chat against the swarm
+- Edit `~/.config/intelnav/config.toml` — the TUI generates it.
+- Run `intelnav init` — the TUI runs it for you.
+- Type `systemctl` — `/service install` from the TUI does it.
+- Run `intelnav-chunk` or `pipe_peer` — they're folded into
+  `intelnav-node`.
+
+## First launch
 
 ```bash
 intelnav
 ```
 
-The TUI opens. The first lines tell you whether the swarm is
-reachable:
+The TUI:
+
+1. Writes a default `config.toml` with auto-picked free ports.
+2. Generates `~/.local/share/intelnav/peer.key` (your peer
+   identity, 0600).
+3. Fetches the bootstrap seed list from the project's GitHub
+   release, caches it locally.
+4. Probes your hardware and shows the **contribution gate**:
 
 ```
-swarm: peer 12D3KooW… reading the DHT (run `intelnav-node` to host).
+IntelNav requires every peer to contribute.
+
+  1. Host a slice — recommended for your hardware:
+       Qwen 2.5 · 3B · Instruct  layers [0..9)  (comfortable)
+  2. Relay only — daemon participates in the DHT but runs no
+       inference.
 ```
 
-That means the chat client spawned a *client-only* libp2p host.
-It dials your bootstrap peers, populates a routing table, and is
-ready to query the DHT — but it does **not** publish anything.
-Closing this window doesn't take any slices off the network.
+You pick one. Chat doesn't unlock until you do.
 
-## Pick a model
+## Path A — host a slice
 
-```
-/models
-```
-
-Three sources show up:
-
-- **`local`** — GGUFs you've cached (likely none on your first run).
-- **`swarm`** — what the DHT advertises right now. Rows with `· ready`
-  are end-to-end serveable; partial rows are dimmed.
-- **`hub`** — HuggingFace models you can install. With "+N swarm peers"
-  if the same cid is also on the DHT.
-
-Highlight a swarm row that says `· ready` and press `Enter`. The
-chat client greedy-picks one provider per slice, builds a
-`ChainTarget`, and hands it to the local chain driver. Your front-half
-runs in process; the rest streams through the swarm.
-
-## Type a prompt
+Inside the TUI:
 
 ```
+/models             # opens the three-source picker
+                    # highlight a row, press `c` to contribute
+```
+
+After the contribute flow finishes (download + split for hub rows,
+or swarm pull for swarm rows), the TUI prompts to install the
+daemon as a service:
+
+```
+intelnav-node is not yet a system service.
+Install with /service install (one pkexec prompt).
+```
+
+Run `/service install`. `pkexec` pops once, asks for your password,
+and runs `loginctl enable-linger <user>`. After that the daemon
+runs forever, even across reboots — no further sudo.
+
+You can verify with `/service status` and inspect what you're
+hosting with `/hosting`.
+
+## Path B — relay only
+
+If your hardware can't host a slice (or you don't want to), set:
+
+```bash
+INTELNAV_RELAY_ONLY=1 intelnav
+```
+
+…or add `relay_only = true` to `~/.config/intelnav/config.toml`.
+
+The daemon still participates in the Kademlia DHT, so you're
+contributing routing, just not inference. Chat is unlocked.
+
+## Chat against the swarm
+
+Once gated through:
+
+```
+/models                   # three-source picker
+                          # highlight a `swarm · ready` row → Enter
 > hi, what can you do?
 ```
 
-Tokens stream back through the chain. Latency depends on the slowest
-hop, not the slowest peer — you'll feel ~80–120 ms per token on a
-LAN-ish chain, more on WAN.
+Tokens stream back through the chain. If a hop goes down mid-turn
+the chain driver swaps in the next-best provider for that hop
+without dropping your stream — you'll see one short
+`[swarm] hop 2 unreachable, swapping to backup` line in the
+transcript.
 
-## What to set in config
+## Managing your hosting
 
-Bare minimum for a chat-only setup:
-
-```toml
-# ~/.config/intelnav/config.toml
-mode = "network"
-default_model = "qwen2.5-7b-instruct-q4"
-bootstrap = [
-  "/dns4/seed1.intelnav.io/tcp/4001/p2p/12D3KooW…",
-  "/dns4/seed2.intelnav.io/tcp/4001/p2p/12D3KooW…",
-]
+```
+/hosting                          # list slices, active chains, state
+/leave <cid> <start> <end>        # graceful drain
+                                  # in-flight chains finish; new ones go elsewhere
 ```
 
-`bootstrap` is the seed list — a small set of long-lived peers the
-swarm has agreed on. Without it your routing table starts empty and
-the first `/models` open returns nothing.
+A drain transitions through `Announcing → Draining → Stopped`.
+While Draining, the daemon stops re-publishing the provider
+record (so consumers don't pick you for new chains) and refuses
+new forward connections. Existing chains stream until they finish.
+After 5 min of Draining the daemon force-stops, in case a chain
+is wedged.
 
-## When to switch to hosting
+The chunks stay on disk so re-joining the same slice later costs
+zero bandwidth.
 
-If you find yourself running `intelnav` more than a couple times a
-day, the marginal cost of also running `intelnav-node` is tiny — see
-[onboarding-host.md](onboarding-host.md). The swarm is healthier
-with more hosts and your latency improves when slices live near you.
+## When something doesn't work
+
+- `swarm: offline` in the status bar → bootstrap fetch failed or
+  no peers reachable. The cached manifest is used as a fallback;
+  `/service status` will show whether the daemon is live.
+- `daemon not reachable` from `/hosting` → daemon isn't running.
+  Run `/service install` (or just `intelnav-node` in another
+  terminal for ad-hoc).
+- `intelnav doctor` shows missing libllama → unpack the tarball
+  and set `INTELNAV_LIBLLAMA_DIR=<dir>/bin`.

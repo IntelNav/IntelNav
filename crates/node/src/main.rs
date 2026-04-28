@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    intelnav_app::firstrun::ensure_initialized()?;
     let config = Config::load()?;
     intelnav_app::swarm_node::serve_forever(&config, config.models_dir.clone()).await
 }

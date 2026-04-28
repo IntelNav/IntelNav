@@ -46,7 +46,7 @@ total_layers  = 64
 [[part]]
 id              = "p1"
 layer_range     = [0, 15]      # inclusive both ends
-weight_url      = "https://weights.intelnav.io/ds33b-q4km-p1.gguf"
+weight_url      = "https://weights.intelnav.net/ds33b-q4km-p1.gguf"
 sha256          = "..."
 size_bytes      = 4_100_000_000
 min_vram_bytes  = 8_000_000_000
@@ -119,7 +119,7 @@ that the caller can host (checks `min_vram_bytes` against
 {
   "part_id":     "p1",
   "layer_range": [0, 15],
-  "weight_url":  "https://weights.intelnav.io/ds33b-q4km-p1.gguf",
+  "weight_url":  "https://weights.intelnav.net/ds33b-q4km-p1.gguf",
   "sha256":      "...",
   "size_bytes":  4_100_000_000,
   "reservation_ttl_s": 1800

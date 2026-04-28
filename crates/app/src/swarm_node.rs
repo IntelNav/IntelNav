@@ -23,23 +23,41 @@ use intelnav_net::{
     identity_to_keypair, spawn_libp2p_node, Libp2pNode, Multiaddr, ProviderRecord, SwarmIndex,
 };
 
-use crate::contribute::KeptRanges;
+use crate::contribute::{DisabledRanges, KeptRanges};
+use crate::control::{self, ControlServer, ControlState, SliceStatus};
 
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DRAIN_GRACE:       Duration = Duration::from_secs(5 * 60);
+const WATCHDOG_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct SwarmHandle {
     pub node:        Arc<Libp2pNode>,
     pub index:       SwarmIndex,
+    /// Daemon-only: mutable view of which slices are Announcing /
+    /// Draining / Stopped. The control RPC mutates it; the announce
+    /// loop honours it. `None` for chat clients.
+    pub control:     Option<Arc<ControlState>>,
     /// Background re-announce task. `_` because we hold it for the
     /// drop side-effect (`abort` on Drop kills the task cleanly).
     pub _announce:   Option<JoinHandle<()>>,
+    /// Drain-timeout watchdog: force-stops Draining slices whose grace
+    /// period has elapsed.
+    pub _watchdog:   Option<JoinHandle<()>>,
+    /// Multi-shard chunk HTTP server bound to `config.chunks_addr`.
+    pub _chunks:     Option<JoinHandle<()>>,
+    /// Forward TCP listener bound to `config.forward_addr`.
+    pub _forward:    Option<JoinHandle<()>>,
+    /// Daemon-only: control RPC server. Drop removes the socket file.
+    pub _control_server: Option<ControlServer>,
 }
 
 impl Drop for SwarmHandle {
     fn drop(&mut self) {
-        if let Some(h) = self._announce.take() {
-            h.abort();
-        }
+        if let Some(h) = self._announce.take() { h.abort(); }
+        if let Some(h) = self._watchdog.take() { h.abort(); }
+        if let Some(h) = self._chunks.take()   { h.abort(); }
+        if let Some(h) = self._forward.take()  { h.abort(); }
+        // _control_server::Drop runs automatically.
     }
 }
 
@@ -86,8 +104,16 @@ async fn spawn_inner(config: &Config, models_dir: Option<PathBuf>) -> Result<Swa
         .context("spawn libp2p")?);
     info!(peer_id = %node.peer_id, listen_addrs = ?node.listen_addrs, "libp2p node up");
 
-    // Dial bootstrap peers. Each is an inline multiaddr ending in /p2p/<peer_id>.
-    for boot in &config.bootstrap {
+    // Resolve the bootstrap seed list. If the user pinned one in config we
+    // honour it (escape hatch for self-hosted swarms / dev). Otherwise pull
+    // the curated manifest from GitHub releases — falls back to cache if
+    // the network is down.
+    let bootstrap: Vec<String> = if config.bootstrap.is_empty() {
+        crate::bootstrap::load_seeds().await
+    } else {
+        config.bootstrap.clone()
+    };
+    for boot in &bootstrap {
         let addr: Multiaddr = match boot.parse() {
             Ok(a)  => a,
             Err(e) => { warn!(?e, %boot, "skipping malformed bootstrap"); continue; }
@@ -96,29 +122,115 @@ async fn spawn_inner(config: &Config, models_dir: Option<PathBuf>) -> Result<Swa
             warn!(?e, %addr, "bootstrap dial failed");
         }
     }
-    if !config.bootstrap.is_empty() {
+    if !bootstrap.is_empty() {
         let _ = node.bootstrap().await;
     }
 
-    let announce = match models_dir {
-        Some(dir) => spawn_announce_loop(&node, config, &dir).await,
-        None => None,
+    let (announce, watchdog, chunks_task, forward_task, control_state, control_server) = match models_dir {
+        Some(dir) => {
+            let state = ControlState::new(node.peer_id.to_base58());
+            // Seed control state from the on-disk sidecars so a fresh
+            // boot reflects what we'll be publishing.
+            let kept = scan_kept_ranges(&dir);
+            for k in &kept {
+                for (start, end) in &k.kept {
+                    state.upsert_announcing(
+                        (k.model_cid.clone(), *start, *end),
+                        k.display_name.clone(),
+                    ).await;
+                }
+            }
+            let announce = spawn_announce_loop(&node, config, &dir, state.clone()).await;
+            let watchdog = spawn_drain_watchdog(state.clone(), dir.clone());
+            let chunks = spawn_chunk_server(config, &dir);
+            let forward = spawn_forward_listener(config, state.clone(), &dir);
+            let server = control::spawn_server(state.clone(), control::default_socket_path())?;
+            (announce, Some(watchdog), chunks, forward, Some(state), Some(server))
+        }
+        None => (None, None, None, None, None, None),
     };
 
     let index = SwarmIndex::new(node.clone());
-    Ok(SwarmHandle { node, index, _announce: announce })
+    Ok(SwarmHandle {
+        node,
+        index,
+        control: control_state,
+        _announce: announce,
+        _watchdog: watchdog,
+        _chunks: chunks_task,
+        _forward: forward_task,
+        _control_server: control_server,
+    })
+}
+
+fn spawn_forward_listener(
+    config: &Config,
+    state: Arc<ControlState>,
+    models_dir: &std::path::Path,
+) -> Option<JoinHandle<()>> {
+    let raw = config.forward_addr.as_deref()?;
+    crate::forward_server::spawn(raw, state, models_dir.to_path_buf())
+}
+
+/// Spawn the multi-shard chunk HTTP server bound to `chunks_addr`. No-op
+/// if the user hasn't set one (still useful — they can later set it via
+/// config and restart). The server serves every shard under
+/// `<models_dir>/.shards/` keyed by manifest_cid.
+fn spawn_chunk_server(config: &Config, models_dir: &std::path::Path) -> Option<JoinHandle<()>> {
+    let raw = config.chunks_addr.clone()?;
+    let addr: std::net::SocketAddr = match raw.parse() {
+        Ok(a) => a,
+        Err(e) => { warn!(?e, %raw, "chunks_addr is not host:port"); return None; }
+    };
+    let shards_root = models_dir.join(".shards");
+    Some(tokio::spawn(async move {
+        if let Err(e) = intelnav_model_store::serve::serve_multi(&shards_root, addr).await {
+            warn!(?e, "chunk server exited");
+        }
+    }))
+}
+
+/// Drain-timeout watchdog. Every [`WATCHDOG_INTERVAL`] it scans for
+/// slices that have been Draining longer than [`DRAIN_GRACE`] and
+/// force-stops them — releasing whatever in-flight chains were
+/// holding the slice up. Without this a wedged consumer could pin a
+/// host slice forever.
+fn spawn_drain_watchdog(state: Arc<ControlState>, models_dir: PathBuf) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(WATCHDOG_INTERVAL);
+        loop {
+            tick.tick().await;
+            let expired = state.expired_draining(DRAIN_GRACE).await;
+            if expired.is_empty() { continue; }
+            for (cid, start, end) in &expired {
+                warn!(%cid, start, end, "drain grace elapsed — force-stopping slice");
+            }
+            // Force-stop everything draining at once (the snapshot above
+            // is ground truth for "expired"; force_stop_all_draining
+            // covers any extra that hit the grace between calls).
+            state.force_stop_all_draining().await;
+            persist_drained_slices(&state, &models_dir).await;
+        }
+    })
 }
 
 /// Boot the periodic announce loop. Returns `None` when the peer
-/// hosts no slices (nothing to publish), in which case dropping
-/// the SwarmHandle has nothing to abort.
+/// hosts no slices on disk (nothing to publish), in which case
+/// dropping the SwarmHandle has nothing to abort.
+///
+/// The loop re-reads `kept_ranges.json` sidecars on every tick so a
+/// `Join` via the control RPC (which writes a fresh sidecar) is
+/// picked up automatically. It also consults `ControlState` to skip
+/// slices in Draining / Stopped so a `Leave` stops announces
+/// immediately, even before the 30-min DHT TTL expires.
 async fn spawn_announce_loop(
     node: &Arc<Libp2pNode>,
     config: &Config,
     models_dir: &std::path::Path,
+    state: Arc<ControlState>,
 ) -> Option<JoinHandle<()>> {
-    let kept = scan_kept_ranges(models_dir);
-    if kept.is_empty() { return None; }
+    let initial = scan_kept_ranges(models_dir);
+    if initial.is_empty() { return None; }
 
     let chunks = config.chunks_addr.clone();
     let forward = config.forward_addr.clone();
@@ -128,7 +240,7 @@ async fn spawn_announce_loop(
 
     // Initial announce so a freshly-booted peer is visible immediately.
     announce_all(
-        node, &kept,
+        node, &initial, &state,
         &peer_id_b58, &listen_strings,
         chunks.as_deref(), forward.as_deref(),
     ).await;
@@ -136,14 +248,20 @@ async fn spawn_announce_loop(
     let node_t   = node.clone();
     let chunks_t = chunks;
     let forward_t = forward;
+    let models_t = models_dir.to_path_buf();
+    let state_t  = state.clone();
     Some(tokio::spawn(async move {
         let mut tick = tokio::time::interval(ANNOUNCE_INTERVAL);
         // Skip the first immediate fire — initial announce already done.
         tick.tick().await;
         loop {
             tick.tick().await;
+            // Persist any drains that completed since the last tick so a
+            // crash mid-drain doesn't resurrect a slice the user left.
+            persist_drained_slices(&state_t, &models_t).await;
+            let kept = scan_kept_ranges(&models_t);
             announce_all(
-                &node_t, &kept,
+                &node_t, &kept, &state_t,
                 &peer_id_b58, &listen_strings,
                 chunks_t.as_deref(), forward_t.as_deref(),
             ).await;
@@ -152,22 +270,49 @@ async fn spawn_announce_loop(
 }
 
 /// Walk `<models_dir>/.shards/<cid>/kept_ranges.json` and collect
-/// every (cid, range) we host. Missing or malformed sidecars are
-/// skipped silently — a corrupted sidecar shouldn't take the swarm
-/// node down.
+/// every (cid, range) we still host. Ranges listed in
+/// `disabled_ranges.json` next to the sidecar are subtracted — that's
+/// the persistent record of a user-initiated `/leave`. Missing or
+/// malformed sidecars are skipped silently.
 fn scan_kept_ranges(models_dir: &std::path::Path) -> Vec<KeptRanges> {
     let shards = models_dir.join(".shards");
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(&shards) else { return out; };
     for entry in rd.flatten() {
-        let path = entry.path().join("kept_ranges.json");
+        let shard_root = entry.path();
+        let path = shard_root.join("kept_ranges.json");
         let Ok(bytes) = std::fs::read(&path) else { continue; };
-        match serde_json::from_slice::<KeptRanges>(&bytes) {
-            Ok(k)  => out.push(k),
-            Err(e) => warn!(?e, file = %path.display(), "malformed kept_ranges.json"),
+        let mut k: KeptRanges = match serde_json::from_slice(&bytes) {
+            Ok(k)  => k,
+            Err(e) => { warn!(?e, file = %path.display(), "malformed kept_ranges.json"); continue; }
+        };
+        let disabled = DisabledRanges::load(&shard_root);
+        k.kept.retain(|&(s, e)| !disabled.contains(s, e));
+        if !k.kept.is_empty() {
+            out.push(k);
         }
     }
     out
+}
+
+/// After ControlState flips a slice to Stopped, persist that decision
+/// so a daemon restart honours it. Called on every announce tick.
+async fn persist_drained_slices(
+    state: &Arc<ControlState>,
+    models_dir: &std::path::Path,
+) {
+    let stopped = state.drain_idle().await;
+    if stopped.is_empty() { return; }
+    for (cid, start, end) in stopped {
+        let root = models_dir.join(".shards").join(&cid);
+        let mut disabled = DisabledRanges::load(&root);
+        disabled.add(start, end);
+        if let Err(e) = disabled.save(&root) {
+            warn!(?e, %cid, start, end, "persist disabled range failed");
+        } else {
+            info!(%cid, start, end, "slice drained — disabled persisted");
+        }
+    }
 }
 
 /// Look up the manifest_cid we wrote next to the chunks. The
@@ -190,6 +335,7 @@ fn manifest_cid_for(shard_root: &std::path::Path) -> Option<String> {
 async fn announce_all(
     node: &Libp2pNode,
     kept: &[KeptRanges],
+    state: &Arc<ControlState>,
     peer_id_b58: &str,
     listen_addrs: &[String],
     chunks_addr: Option<&str>,
@@ -199,6 +345,7 @@ async fn announce_all(
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut published = 0usize;
     for k in kept {
         let shard_root = k.kept.first()
             .and_then(|_| crate::contribute::shard_dir(&PathBuf::new(), &k.model_cid).into());
@@ -215,8 +362,22 @@ async fn announce_all(
             minted_at:    now,
         };
         for (start, end) in &k.kept {
+            // Honour the control-state veto: if a slice has been told to
+            // drain, stop republishing it immediately. The DHT's 30-min
+            // TTL eventually flushes any stale records.
+            let key = (k.model_cid.clone(), *start, *end);
+            if !state.is_announcing(&key).await {
+                // Make sure new sidecars (RPC Join) get registered.
+                if let Some(SliceStatus::Stopped) | None = state_status(state, &key).await {
+                    state.upsert_announcing(key.clone(), k.display_name.clone()).await;
+                } else {
+                    continue;
+                }
+            }
             if let Err(e) = node.announce_shard(&k.model_cid, *start, *end, record.clone()).await {
                 warn!(?e, cid = %k.model_cid, start, end, "announce_shard failed");
+            } else {
+                published += 1;
             }
         }
         // Also publish the model envelope (idempotent).
@@ -232,7 +393,11 @@ async fn announce_all(
             warn!(?e, cid = %k.model_cid, "announce_model failed");
         }
     }
-    info!(n = kept.len(), "DHT announces published");
+    info!(n = published, "DHT announces published");
+}
+
+async fn state_status(state: &Arc<ControlState>, key: &control::SliceKey) -> Option<SliceStatus> {
+    state.slices.lock().await.get(key).map(|e| e.state)
 }
 
 fn load_or_generate_identity() -> Result<Identity> {

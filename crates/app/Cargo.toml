@@ -16,6 +16,7 @@ intelnav-net     = { workspace = true }
 intelnav-runtime = { workspace = true }
 intelnav-model-store = { workspace = true }
 intelnav-ggml    = { path = "../ggml" }
+intelnav-wire    = { workspace = true }
 
 tokio         = { workspace = true }
 futures       = { workspace = true }

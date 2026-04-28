@@ -133,6 +133,14 @@ pub struct Config {
     /// Env: `INTELNAV_FORWARD_ADDR`.
     #[serde(default)]
     pub forward_addr: Option<String>,
+
+    /// Hard contribution gate: when `true`, chat is unlocked even if
+    /// the user hosts no slices, on the understanding that they're
+    /// still contributing DHT routing (the daemon participates in
+    /// Kademlia regardless). Off by default — first run forces the
+    /// user through the picker. Env: `INTELNAV_RELAY_ONLY`.
+    #[serde(default)]
+    pub relay_only: bool,
 }
 
 fn default_wire_dtype() -> String { "fp16".into() }
@@ -159,6 +167,7 @@ impl Default for Config {
             libp2p_listen: default_libp2p_listen(),
             chunks_addr:   None,
             forward_addr:  None,
+            relay_only:    false,
         }
     }
 }
@@ -246,6 +255,9 @@ impl Config {
         }
         if let Ok(v) = var("INTELNAV_FORWARD_ADDR") {
             self.forward_addr = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Ok(v) = var("INTELNAV_RELAY_ONLY") {
+            self.relay_only = matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes");
         }
         if let Ok(v) = var("INTELNAV_TIER") {
             self.default_tier = match v.to_ascii_lowercase().as_str() {

@@ -60,6 +60,49 @@ pub fn shard_dir(models_dir: &std::path::Path, cid: &str) -> PathBuf {
     models_dir.join(".shards").join(cid)
 }
 
+/// On-disk record of (start, end) pairs the user has *left*. Daemon
+/// reads this at boot to subtract from kept_ranges.json — chunks stay
+/// on disk so re-joining is instant, but we don't re-announce them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DisabledRanges {
+    pub disabled: Vec<(u16, u16)>,
+}
+
+impl DisabledRanges {
+    pub fn path_for(shard_root: &std::path::Path) -> PathBuf {
+        shard_root.join("disabled_ranges.json")
+    }
+
+    pub fn load(shard_root: &std::path::Path) -> Self {
+        let path = Self::path_for(shard_root);
+        std::fs::read(&path).ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn contains(&self, start: u16, end: u16) -> bool {
+        self.disabled.iter().any(|&(s, e)| s == start && e == end)
+    }
+
+    pub fn save(&self, shard_root: &std::path::Path) -> std::io::Result<()> {
+        let path = Self::path_for(shard_root);
+        let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
+        std::fs::write(path, bytes)
+    }
+
+    /// Idempotent: add `(start, end)` if not present.
+    pub fn add(&mut self, start: u16, end: u16) {
+        if !self.contains(start, end) {
+            self.disabled.push((start, end));
+        }
+    }
+
+    /// Idempotent: remove `(start, end)` if present.
+    pub fn remove(&mut self, start: u16, end: u16) {
+        self.disabled.retain(|&(s, e)| !(s == start && e == end));
+    }
+}
+
 /// Kick off the split. Returns a receiver of progress events.
 ///
 /// `local` is the cached GGUF that's already been downloaded — the
