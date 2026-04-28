@@ -25,9 +25,11 @@ if-addrs      = { workspace = true }
 hex           = { workspace = true }
 reqwest       = { workspace = true }
 
-# libp2p substrate. TCP + Noise XX + yamux for transport; identify
-# + ping for observability; kad for the shard provider index.
-libp2p        = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "identify", "ping", "kad", "macros", "ed25519"] }
+# libp2p substrate. TCP + DNS + Noise XX + yamux for transport;
+# identify + ping for observability; kad for the shard provider index.
+# `dns` lets us dial `/dns4/seed1.intelnav.net/tcp/4001/p2p/...`
+# multiaddrs without resolving them ahead of time.
+libp2p        = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "identify", "ping", "kad", "macros", "ed25519"] }
 ciborium      = { workspace = true }
 blake3        = { workspace = true }
 anyhow        = { workspace = true }

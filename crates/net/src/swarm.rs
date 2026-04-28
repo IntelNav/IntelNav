@@ -100,6 +100,11 @@ pub async fn spawn(keypair: identity::Keypair, listen: Multiaddr) -> Result<Libp
             yamux::Config::default,
         )
         .context("libp2p tcp/noise/yamux stack")?
+        // Wrap the TCP transport with DNS so callers can dial
+        // `/dns4/<host>/tcp/<port>/p2p/<peer_id>` multiaddrs without
+        // pre-resolving — bootstrap seeds are advertised by hostname.
+        .with_dns()
+        .context("libp2p dns transport")?
         .with_behaviour(|key| {
             let pid = PeerId::from(key.public());
             let mut kad_cfg = kad::Config::new(kad::PROTOCOL_NAME);
