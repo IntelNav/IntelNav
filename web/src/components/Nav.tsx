@@ -28,11 +28,17 @@ export function Nav() {
             <nav className="max-w-6xl mx-auto px-6 h-16 flex items-center gap-8">
                 <Link
                     href="/"
-                    className="flex items-center gap-2.5 transition-opacity hover:opacity-80"
+                    className="flex items-center gap-3 transition-opacity hover:opacity-80 group"
                 >
-                    <Logo size={26} />
+                    <motion.span
+                        animate={{ rotate: [-2, 2, -2] }}
+                        transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+                        className="inline-block"
+                    >
+                        <Logo size={40} />
+                    </motion.span>
                     <span
-                        className="font-serif text-[19px] tracking-tight"
+                        className="font-serif text-[20px] tracking-tight"
                         style={{ color: "var(--strong)" }}
                     >
                         IntelNav

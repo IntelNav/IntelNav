@@ -136,18 +136,64 @@ export function Hero() {
                     </motion.p>
                 </motion.div>
 
-                {/* Logo column. Big, animated, with halo. */}
+                {/* Logo column. Big, animated, with halo. The mark
+                 * needs to feel *alive* — three layered animations:
+                 *   1. entrance: slow blur-and-scale-in.
+                 *   2. continuous float: gentle Y oscillation +
+                 *      tilt, runs forever.
+                 *   3. scroll parallax: outer wrap rises faster than
+                 *      the text column on page scroll. */}
                 <motion.div
                     style={{ y: logoY, rotate: logoRot, opacity }}
                     className="relative flex justify-center lg:justify-end items-center"
                 >
                     <motion.div
-                        initial={{ opacity: 0, scale: 0.85 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ duration: 1.0, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                        initial={{ opacity: 0, scale: 0.55, rotate: -16, filter: "blur(28px)" }}
+                        animate={{ opacity: 1, scale: 1,    rotate: 0,   filter: "blur(0px)" }}
+                        transition={{
+                            duration: 1.6,
+                            delay: 0.4,
+                            ease: [0.22, 1, 0.36, 1],
+                            opacity: { duration: 0.9, delay: 0.4 },
+                        }}
                         className="logo-glow relative"
                     >
-                        <Logo size={360} priority className="select-none" />
+                        {/* Inner wrap drives the continuous float.
+                         * Two transforms layered: gentle vertical
+                         * float (~10px) and slight rotation drift
+                         * (-1.8° ↔ 1.8°). Different periods so they
+                         * stay un-synced, which reads as organic. */}
+                        <motion.div
+                            animate={{ y: [0, -12, 0] }}
+                            transition={{
+                                duration: 6,
+                                repeat: Infinity,
+                                ease: "easeInOut",
+                                delay: 1.8,
+                            }}
+                        >
+                            <motion.div
+                                animate={{ rotate: [-1.8, 1.8, -1.8] }}
+                                transition={{
+                                    duration: 9,
+                                    repeat: Infinity,
+                                    ease: "easeInOut",
+                                    delay: 1.8,
+                                }}
+                            >
+                                <motion.div
+                                    animate={{ scale: [1, 1.025, 1] }}
+                                    transition={{
+                                        duration: 5,
+                                        repeat: Infinity,
+                                        ease: "easeInOut",
+                                        delay: 1.8,
+                                    }}
+                                >
+                                    <Logo size={380} className="select-none" />
+                                </motion.div>
+                            </motion.div>
+                        </motion.div>
                     </motion.div>
                 </motion.div>
             </div>
