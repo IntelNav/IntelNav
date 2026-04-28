@@ -1,24 +1,41 @@
 # Onboarding — first run
 
-You just downloaded `intelnav`. You don't know any of the file
-paths or commands. This is what running it for the first time
-looks like, and how to choose between **hosting a slice** and
+You just downloaded `intelnav`. This is what running it for the first
+time looks like, and how to choose between **hosting a slice** and
 **relay-only mode**.
 
 ## What's required
 
-- A built `intelnav` + `intelnav-node` binary
-  (`cargo build --release -p intelnav-cli -p intelnav-node`).
-- A libllama tarball at `INTELNAV_LIBLLAMA_DIR/bin/`.
-  `intelnav doctor` will tell you if it's missing.
+- The `intelnav` and `intelnav-node` binaries on your PATH. Either
+  - the `curl | sh` installer:
 
-You do **not** need to:
+    ```bash
+    curl -fsSL https://intelnav.net/install.sh | sh
+    ```
 
-- Edit `~/.config/intelnav/config.toml` — the TUI generates it.
-- Run `intelnav init` — the TUI runs it for you.
-- Type `systemctl` — `/service install` from the TUI does it.
-- Run `intelnav-chunk` or `pipe_peer` — they're folded into
-  `intelnav-node`.
+  - or build from source:
+
+    ```bash
+    bash scripts/provision.sh
+    cargo build --release -p intelnav-cli -p intelnav-node
+    ```
+
+- A libllama tarball. The installer fetches one for your platform +
+  GPU vendor automatically. From source: `bash scripts/install-libllama.sh`.
+
+That's it. `intelnav doctor` runs every preflight and tells you what's
+missing if anything is.
+
+## What you do **not** need to do
+
+- Edit `~/.config/intelnav/config.toml` — `intelnav` writes it on
+  first run.
+- Run `intelnav init` — first run does this for you.
+- Set `INTELNAV_LIBLLAMA_DIR` — auto-discovered from
+  `~/.cache/intelnav/libllama/bin/`.
+- Set `HSA_OVERRIDE_GFX_VERSION` for an AMD card — auto-set when
+  needed by the GPU probe.
+- Type `systemctl` — `/service install` does it from inside the TUI.
 
 ## First launch
 
@@ -29,60 +46,74 @@ intelnav
 The TUI:
 
 1. Writes a default `config.toml` with auto-picked free ports.
-2. Generates `~/.local/share/intelnav/peer.key` (your peer
-   identity, 0600).
-3. Fetches the bootstrap seed list from the project's GitHub
-   release, caches it locally.
-4. Probes your hardware and shows the **contribution gate**:
+2. Generates `~/.local/share/intelnav/peer.key` (your Ed25519
+   identity, mode 0600).
+3. Auto-discovers libllama at `~/.cache/intelnav/libllama/bin/`.
+4. Fetches the bootstrap seed list from the project's GitHub
+   release, caches it locally for 7 days.
+5. Probes your hardware and shows the **contribution gate**:
 
 ```
 IntelNav requires every peer to contribute.
 
-  1. Host a slice — recommended for your hardware:
-       Qwen 2.5 · 3B · Instruct  layers [0..9)  (comfortable)
-  2. Relay only — daemon participates in the DHT but runs no
-       inference.
+Your hardware is plenty for hosting. Please host a slice.
+The network only works because capable peers commit their hardware.
+
+  Suggested:  Qwen 2.5 · 7B · Instruct  layers [0..7)
 ```
 
-You pick one. Chat doesn't unlock until you do.
+The exact wording depends on your hardware tier — capable cards see
+"Please host a slice" with no relay-only paragraph; modest cards see
+both options; hardware below the catalog floor sees relay-only as
+the recommended path.
+
+Chat doesn't unlock until you've picked one of the two.
 
 ## Path A — host a slice
+
+```bash
+INTELNAV_RELAY_ONLY=1 intelnav   # one-time, just to reach the TUI
+```
 
 Inside the TUI:
 
 ```
-/models             # opens the three-source picker
-                    # highlight a row, press `c` to contribute
+/models      open the three-source picker
+             highlight a row, press `c` to start chunking
 ```
 
-After the contribute flow finishes (download + split for hub rows,
-or swarm pull for swarm rows), the TUI prompts to install the
-daemon as a service:
+After "splitting Qwen 2.5 · … → shards in …" appears, the chunker
+wrote a sidecar to `<models_dir>/.shards/<cid>/`. Now make it
+permanent:
 
 ```
-intelnav-node is not yet a system service.
-Install with /service install (one pkexec prompt).
+/service install
 ```
 
-Run `/service install`. `pkexec` pops once, asks for your password,
-and runs `loginctl enable-linger <user>`. After that the daemon
-runs forever, even across reboots — no further sudo.
+`pkexec` pops once, asks for your password, runs
+`loginctl enable-linger <user>`. After that `intelnav-node` runs
+forever — even across reboots — and you can drop the
+`INTELNAV_RELAY_ONLY=1` env var.
 
-You can verify with `/service status` and inspect what you're
-hosting with `/hosting`.
+Verify:
+
+```
+/service status        # should report Active
+/hosting               # the slice you just contributed shows up
+```
 
 ## Path B — relay only
 
-If your hardware can't host a slice (or you don't want to), set:
+If your hardware can't host a slice:
 
 ```bash
 INTELNAV_RELAY_ONLY=1 intelnav
 ```
 
-…or add `relay_only = true` to `~/.config/intelnav/config.toml`.
-
-The daemon still participates in the Kademlia DHT, so you're
-contributing routing, just not inference. Chat is unlocked.
+…or, to make it permanent, add `relay_only = true` to
+`~/.config/intelnav/config.toml`. The daemon still participates in
+the Kademlia DHT (which the network needs for peer discovery), it
+just doesn't run inference layers.
 
 ## Chat against the swarm
 
@@ -91,7 +122,7 @@ Once gated through:
 ```
 /models                   # three-source picker
                           # highlight a `swarm · ready` row → Enter
-> hi, what can you do?
+hi, what can you do?
 ```
 
 Tokens stream back through the chain. If a hop goes down mid-turn
@@ -103,28 +134,49 @@ transcript.
 ## Managing your hosting
 
 ```
-/hosting                          # list slices, active chains, state
-/leave <cid> <start> <end>        # graceful drain
-                                  # in-flight chains finish; new ones go elsewhere
+/hosting                              what slices you host + active chain count
+/leave                                pick a slice to drain (numbered list)
+/leave <n>                            drain row n from the last listing
+/leave <cid> <start> <end>            drain by full coords (power user)
 ```
 
-A drain transitions through `Announcing → Draining → Stopped`.
-While Draining, the daemon stops re-publishing the provider
-record (so consumers don't pick you for new chains) and refuses
-new forward connections. Existing chains stream until they finish.
-After 5 min of Draining the daemon force-stops, in case a chain
-is wedged.
+A drain transitions `Announcing → Draining → Stopped`. While
+Draining, the daemon stops re-publishing the provider record (so
+consumers stop picking you for new chains) and refuses new forward
+sessions. Existing chains keep streaming until they finish. After
+5 min of Draining with chains still attached, the daemon
+force-stops; this is the safety valve against a wedged consumer.
 
-The chunks stay on disk so re-joining the same slice later costs
+The chunks stay on disk, so re-joining the same slice later costs
 zero bandwidth.
+
+## Keybindings
+
+`/keybindings` inside the TUI prints the canonical list. The ones
+worth remembering:
+
+- `Esc Esc` — clear input (double-tap within 600 ms)
+- `\` + `Enter` — newline (alongside `Shift+Enter`)
+- `Ctrl+G` — edit current input in `$EDITOR`
+- `Ctrl+Shift+_` — undo last input edit
+- `Alt+P` — cycle to next cached model
+- `Ctrl+L` — clear transcript
+- `Ctrl+C` — cancel stream / clear input. Twice within 1.5s = quit.
 
 ## When something doesn't work
 
-- `swarm: offline` in the status bar → bootstrap fetch failed or
-  no peers reachable. The cached manifest is used as a fallback;
-  `/service status` will show whether the daemon is live.
-- `daemon not reachable` from `/hosting` → daemon isn't running.
-  Run `/service install` (or just `intelnav-node` in another
+- **Bootstrap fetch failed.** Logged at startup. Cached manifest is
+  used as fallback. mDNS still finds peers on the same LAN.
+- **`daemon not reachable` from `/hosting`.** `intelnav-node` isn't
+  running. Run `/service install` (or `intelnav-node` in another
   terminal for ad-hoc).
-- `intelnav doctor` shows missing libllama → unpack the tarball
-  and set `INTELNAV_LIBLLAMA_DIR=<dir>/bin`.
+- **`intelnav doctor` reports missing libllama.** Run
+  `bash scripts/install-libllama.sh` (or pass
+  `INTELNAV_LIBLLAMA_DIR=/path/to/bin` if you already have one).
+- **ROCm error: invalid device function.** Your card's `gfx` arch
+  isn't covered by the libllama tarball. The runtime auto-sets
+  `HSA_OVERRIDE_GFX_VERSION` for known RDNA2/3/3.5 cards; for
+  anything more exotic, set it manually to the nearest neighbor
+  arch. Open an issue with the output of `rocminfo`.
+- **Logs.** Everything goes to `~/.local/state/intelnav/intelnav.log`
+  while the TUI is up. `tail -f` it in another terminal.
