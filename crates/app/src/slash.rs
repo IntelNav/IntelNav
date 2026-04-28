@@ -24,7 +24,7 @@ pub const COMMANDS: &[SlashCmd] = &[
     SlashCmd { name: "model",  args: "<name>",              help: "switch active model" },
     SlashCmd { name: "models", args: "",                    help: "open the model picker" },
     SlashCmd { name: "hosting", args: "",                   help: "view + manage slices you host" },
-    SlashCmd { name: "leave",   args: "<cid> <start> <end>", help: "graceful drain of a hosted slice" },
+    SlashCmd { name: "leave",   args: "[<n> | <cid> <start> <end>]", help: "drain a hosted slice (no args to pick from a list)" },
     SlashCmd { name: "service", args: "<install|status|uninstall>", help: "manage the intelnav-node systemd unit" },
     SlashCmd { name: "keybindings", args: "",                help: "list every keyboard shortcut" },
     SlashCmd { name: "doctor", args: "",                    help: "runtime snapshot" },

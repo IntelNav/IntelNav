@@ -61,9 +61,8 @@ copy_one() {
 }
 
 copy_one target/release          intelnav
+copy_one target/release          intelnav-node
 copy_one target/release          intelnav-chunk
-copy_one target/release/examples pipe_peer
-copy_one target/release/examples pipe_driver
 copy_one target/release/examples bench_chain
 
 # Strip debug symbols on Unixes — binaries ship ~2× smaller, and a

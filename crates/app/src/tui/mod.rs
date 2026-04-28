@@ -300,6 +300,11 @@ struct AppState {
     /// Ring of recent input snapshots for Ctrl+Shift+_ undo. Each
     /// mutating edit pushes (input, cursor) before the change.
     input_undo: std::collections::VecDeque<(String, usize)>,
+    /// Snapshot of `(cid, start, end)` from the most recent `/leave`
+    /// (no-args) listing. Lets the user follow up with `/leave <n>`
+    /// where n is the 1-based row index in that listing, instead of
+    /// re-typing a 22-char base58 cid.
+    leave_picker: Vec<(String, u16, u16)>,
 }
 
 impl AppState {
@@ -345,6 +350,7 @@ impl AppState {
             exit_pending: None,
             clear_pending: None,
             input_undo: std::collections::VecDeque::with_capacity(UNDO_HISTORY_CAP),
+            leave_picker: Vec::new(),
         }
     }
 
@@ -744,16 +750,52 @@ impl AppState {
         self.history.push(Turn::system(msg));
     }
 
-    /// `/leave <cid> <start> <end>` — graceful drain via daemon RPC.
+    /// `/leave` — three forms, in order of friendliness:
+    ///   * `/leave`                   — list hosted slices with picker IDs
+    ///   * `/leave <n>`               — drain row `n` from the last listing
+    ///   * `/leave <cid> <start> <end>` — drain by full coords (power user)
     fn handle_leave_cmd<'a, I: Iterator<Item = &'a str>>(&mut self, mut parts: I) {
-        let cid = parts.next().map(str::to_string);
-        let start = parts.next().and_then(|s| s.parse::<u16>().ok());
-        let end   = parts.next().and_then(|s| s.parse::<u16>().ok());
+        let a = parts.next();
+        let b = parts.next();
+        let c = parts.next();
+
+        // Form 1: bare /leave — show the picker.
+        if a.is_none() {
+            self.show_leave_picker();
+            return;
+        }
+        // Form 2: /leave <n> — resolve from the last picker snapshot.
+        if b.is_none() {
+            if let Some(n) = a.unwrap().parse::<usize>().ok() {
+                let Some(entry) = (n.checked_sub(1)).and_then(|i| self.leave_picker.get(i).cloned()) else {
+                    self.history.push(Turn::system(format!(
+                        "/leave {n}: no row {n} in the last listing — type /leave with no args to refresh."
+                    )));
+                    return;
+                };
+                let (cid, start, end) = entry;
+                self.do_leave(cid, start, end);
+                return;
+            }
+            // Fall through: a single non-numeric arg is malformed.
+        }
+        // Form 3: /leave <cid> <start> <end>.
+        let cid = a.map(str::to_string);
+        let start = b.and_then(|s| s.parse::<u16>().ok());
+        let end   = c.and_then(|s| s.parse::<u16>().ok());
         let (Some(cid), Some(start), Some(end)) = (cid, start, end) else {
-            self.history.push(Turn::system(
-                String::from("usage: /leave <cid> <start> <end>")));
+            self.history.push(Turn::system(String::from(
+                "usage:\n  /leave                       list hosted slices to pick from\n  \
+                 /leave <n>                   drain row n from the last listing\n  \
+                 /leave <cid> <start> <end>   drain by full coords",
+            )));
             return;
         };
+        self.do_leave(cid, start, end);
+    }
+
+    /// Shared finishing step for the three /leave forms.
+    fn do_leave(&mut self, cid: String, start: u16, end: u16) {
         use crate::control;
         let sock = control::default_socket_path();
         let req = control::Request::Leave { cid: cid.clone(), start, end };
@@ -762,13 +804,66 @@ impl AppState {
         });
         let msg = match result {
             Ok(control::Response::Leaving) => format!(
-                "leaving {cid} [{start}..{end}) — draining; in-flight chains will finish."
+                "leaving {} [{start}..{end}) — draining; in-flight chains will finish.",
+                &cid[..cid.len().min(12)],
             ),
             Ok(control::Response::Error { message }) => format!("/leave failed: {message}"),
             Ok(_) => "/leave: unexpected daemon reply".into(),
             Err(e) => format!("/leave: daemon unreachable: {e}"),
         };
         self.history.push(Turn::system(msg));
+    }
+
+    /// Render a numbered list of hosted slices, caching the snapshot
+    /// so the user can follow up with `/leave <n>`.
+    fn show_leave_picker(&mut self) {
+        use crate::control;
+        let sock = control::default_socket_path();
+        let result: Result<control::Response, _> = run_blocking(async move {
+            control::call(&sock, control::Request::ListHosted).await
+        });
+        match result {
+            Ok(control::Response::Hosted { slices }) => {
+                if slices.is_empty() {
+                    self.leave_picker.clear();
+                    self.history.push(Turn::system(String::from(
+                        "/leave: nothing hosted right now — /models then `c` to start.",
+                    )));
+                    return;
+                }
+                self.leave_picker = slices.iter()
+                    .map(|s| (s.cid.clone(), s.start, s.end))
+                    .collect();
+                let mut buf = String::from("pick a slice to drain (then `/leave <n>`):\n");
+                for (i, s) in slices.iter().enumerate() {
+                    let label = if s.display_name.is_empty() {
+                        let short = &s.cid[..s.cid.len().min(12)];
+                        short.to_string()
+                    } else { s.display_name.clone() };
+                    let state = match s.state {
+                        control::SliceStatus::Announcing => "active",
+                        control::SliceStatus::Draining   => "draining",
+                        control::SliceStatus::Stopped    => "stopped",
+                    };
+                    buf.push_str(&format!(
+                        "  [{n}]  {label:<32} layers [{start:>3}..{end:>3}) · {state} · {chains} active\n",
+                        n = i + 1, start = s.start, end = s.end, chains = s.active_chains,
+                    ));
+                }
+                self.history.push(Turn::system(buf.trim_end_matches('\n').to_string()));
+            }
+            Ok(control::Response::Error { message }) => {
+                self.history.push(Turn::system(format!("/leave: daemon refused: {message}")));
+            }
+            Ok(_) => {
+                self.history.push(Turn::system(String::from("/leave: unexpected daemon reply")));
+            }
+            Err(_) => {
+                self.history.push(Turn::system(String::from(
+                    "/leave: daemon not reachable. /service install or run `intelnav-node`.",
+                )));
+            }
+        }
     }
 
     /// `/keybindings` — list every keyboard shortcut. Single source of

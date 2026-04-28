@@ -84,6 +84,10 @@ async fn main() -> Result<()> {
     // Auto-init on first run: writes config.toml + peer.key + models_dir
     // if any are missing. Idempotent on subsequent runs.
     let init_report = firstrun::ensure_initialized()?;
+    // Discover libllama in standard cache paths so the user doesn't
+    // have to set INTELNAV_LIBLLAMA_DIR by hand. Must run before any
+    // dlopen attempt.
+    firstrun::auto_discover_libllama_dir();
     // Probe the GPU and set HSA_OVERRIDE_GFX_VERSION if our libllama
     // tarballs would otherwise fail on this card. Must run BEFORE any
     // libllama operation — we're still single-threaded here.

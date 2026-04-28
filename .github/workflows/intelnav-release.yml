@@ -1,15 +1,13 @@
 name: IntelNav CLI release
 
-# Builds prebuilt intelnav / intelnav-chunk / pipe_peer / bench_chain
+# Builds prebuilt intelnav / intelnav-node / intelnav-chunk / bench_chain
 # binaries for every (OS × arch) we realistically support, so a user
-# can `curl | tar | run` instead of `git clone && cargo build` (which
-# was ~4 min on a 2-core laptop — the exact UX friction #29 flagged).
+# can `curl | tar | run` instead of `git clone && cargo build`.
 #
 # Each job emits `intelnav-<os-arch>-<short-sha>.tar.gz` with:
-#   bin/intelnav            — the main CLI
-#   bin/intelnav-chunk      — Path B chunker / fetcher / serve
-#   bin/pipe_peer           — layer-range peer daemon (Path B capable)
-#   bin/pipe_driver         — driver used with pipe_peer
+#   bin/intelnav            — chat client (TUI)
+#   bin/intelnav-node       — host daemon (libp2p + control RPC + chunk + forward)
+#   bin/intelnav-chunk      — one-off chunker / fetcher CLI
 #   bin/bench_chain         — local bench harness
 #   LICENSE
 #   README.md               — short "how to pair with libllama" blurb
@@ -58,13 +56,12 @@ jobs:
 
       - name: Build release binaries
         run: |
-          # Bins only — examples `smoke_load`/`probe` still use pre-Hidden
-          # candle APIs and won't compile; keep them out of the release.
           cargo build --release \
             -p intelnav-cli --bin intelnav \
+            -p intelnav-node --bin intelnav-node \
             -p intelnav-model-store --features serve,p2p --bin intelnav-chunk
           cargo build --release \
-            -p intelnav-runtime --example pipe_peer --example pipe_driver --example bench_chain
+            -p intelnav-runtime --example bench_chain
 
       - name: Package
         shell: bash

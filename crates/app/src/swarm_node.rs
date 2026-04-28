@@ -69,18 +69,81 @@ pub async fn spawn_client_only(config: &Config) -> Result<SwarmHandle> {
     spawn_inner(config, None).await
 }
 
+/// Maximum time we'll wait for in-flight chains to finish during a
+/// graceful shutdown. After this, we abort and exit anyway — better
+/// to drop a wedged chain than to block a logout/reboot indefinitely.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(30);
+
+/// How often we re-check for active chains during the drain wait.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(500);
+
 /// Run the host daemon forever. Spawns the swarm, hosts the kept
-/// slices, and blocks on Ctrl+C. Used by the `intelnav-node` binary.
+/// slices, and blocks until SIGINT (Ctrl+C) or SIGTERM (systemd stop /
+/// logout / reboot). On either signal, transitions every Announcing
+/// slice to Draining, waits up to [`SHUTDOWN_DRAIN_BUDGET`] for active
+/// chains to finish, then exits. Used by the `intelnav-node` binary.
 pub async fn serve_forever(config: &Config, models_dir: PathBuf) -> Result<()> {
     let handle = spawn(config, models_dir).await?;
     info!(
         peer_id = %handle.node.peer_id,
-        "intelnav-node ready — Ctrl+C to stop",
+        "intelnav-node ready — SIGINT or SIGTERM for graceful shutdown",
     );
-    tokio::signal::ctrl_c().await
-        .map_err(|e| anyhow::anyhow!("install ctrl_c handler: {e}"))?;
-    info!("ctrl_c received, shutting down");
+
+    wait_for_shutdown_signal().await?;
+    info!("shutdown signal received — beginning graceful drain");
+
+    // Tell the announce loop + forward listener that everything is
+    // draining: stop re-announcing provider records, refuse new chain
+    // sessions. In-flight chains keep streaming until they finish.
+    let attached_chains = if let Some(state) = handle.control.as_ref() {
+        let slices = state.snapshot_hosted().await;
+        for s in &slices {
+            if matches!(s.state, control::SliceStatus::Announcing) {
+                state.begin_drain(&(s.cid.clone(), s.start, s.end)).await;
+            }
+        }
+        slices.iter().map(|s| s.active_chains).sum::<u32>()
+    } else { 0 };
+    info!(in_flight = attached_chains, budget = ?SHUTDOWN_DRAIN_BUDGET, "draining");
+
+    // Poll until every slice is idle or budget expires.
+    if let Some(state) = handle.control.as_ref() {
+        let deadline = std::time::Instant::now() + SHUTDOWN_DRAIN_BUDGET;
+        while std::time::Instant::now() < deadline {
+            let still_active: u32 = state.snapshot_hosted().await
+                .iter().map(|s| s.active_chains).sum();
+            if still_active == 0 { break; }
+            tokio::time::sleep(SHUTDOWN_POLL).await;
+        }
+        let final_active: u32 = state.snapshot_hosted().await
+            .iter().map(|s| s.active_chains).sum();
+        if final_active > 0 {
+            warn!(stuck = final_active, "drain budget exhausted — force-exiting with chains still attached");
+        } else {
+            info!("drain complete — all chains finished cleanly");
+        }
+    }
+
     drop(handle);
+    Ok(())
+}
+
+/// Block until the daemon receives SIGINT or SIGTERM, whichever fires
+/// first. SIGINT is what Ctrl+C sends in a foreground shell; SIGTERM
+/// is what systemd, init scripts, and `kill <pid>` send.
+async fn wait_for_shutdown_signal() -> Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| anyhow::anyhow!("install SIGTERM handler: {e}"))?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => {
+            r.map_err(|e| anyhow::anyhow!("install SIGINT handler: {e}"))?;
+            info!("SIGINT (Ctrl+C) received");
+        }
+        _ = sigterm.recv() => {
+            info!("SIGTERM received");
+        }
+    }
     Ok(())
 }
 

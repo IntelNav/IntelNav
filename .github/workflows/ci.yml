@@ -107,7 +107,7 @@ jobs:
             -p intelnav-wire \
             -p intelnav-crypto \
             -p intelnav-net \
-            -p intelnav-registry \
+            -p intelnav-app \
             -- --test-threads=1
           cargo test --no-fail-fast \
             -p intelnav-model-store --features serve,p2p \

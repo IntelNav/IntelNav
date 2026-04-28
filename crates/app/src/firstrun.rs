@@ -91,6 +91,64 @@ pub fn ensure_initialized() -> Result<InitReport> {
     Ok(InitReport { wrote_config, wrote_identity, created_models_dir })
 }
 
+/// Probe known cache locations for an unpacked libllama tarball and
+/// set `INTELNAV_LIBLLAMA_DIR` in the process env if found.
+///
+/// libllama is loaded via `dlopen`; the loader needs an absolute path
+/// to a directory containing `libllama.so` + the ggml backends. We
+/// don't want to make every user export the env var by hand.
+///
+/// Order:
+/// 1. If `INTELNAV_LIBLLAMA_DIR` is already set, leave it alone.
+/// 2. `<XDG_CACHE>/intelnav/libllama/bin` — the canonical install path
+///    used by `scripts/install-libllama.sh`.
+/// 3. `<XDG_CACHE>/intelnav/libllama/<sha>/bin` — match any extracted
+///    tarball under the cache root.
+///
+/// Idempotent: returns the resolved path on success, or `None` and
+/// leaves the env unset (subsequent libllama load will fail with the
+/// existing actionable error from intelnav-ggml).
+pub fn auto_discover_libllama_dir() -> Option<PathBuf> {
+    if std::env::var_os("INTELNAV_LIBLLAMA_DIR").is_some() {
+        return std::env::var_os("INTELNAV_LIBLLAMA_DIR").map(PathBuf::from);
+    }
+    let candidates = libllama_candidate_paths();
+    for path in candidates {
+        if path.join("libllama.so").exists() {
+            // SAFETY: env::set_var is unsafe in 2024 ed because it's
+            // racy with other threads. We're called from main() before
+            // any worker spawns, which is the documented safe window.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var("INTELNAV_LIBLLAMA_DIR", &path);
+            }
+            info!(path = %path.display(), "auto-discovered libllama");
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Build the ordered list of paths firstrun probes for libllama.
+fn libllama_candidate_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dirs) = directories::ProjectDirs::from("io", "intelnav", "intelnav") {
+        let cache = dirs.cache_dir();
+        // 1. Canonical: <cache>/libllama/bin (a symlink set by the installer).
+        out.push(cache.join("libllama").join("bin"));
+        // 2. Any extracted tarball: <cache>/libllama/<sha>/bin.
+        if let Ok(rd) = std::fs::read_dir(cache.join("libllama")) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    out.push(p.join("bin"));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Try to bind `preferred`; if it's taken let the OS pick. Either way
 /// return *a* port number. We don't actually keep the listener — this
 /// is a "is the port likely free right now" probe.
