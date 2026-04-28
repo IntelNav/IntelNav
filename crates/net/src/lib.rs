@@ -2,10 +2,10 @@
 //!
 //! Three layers, surfaced from least-magical to most:
 //!
-//! 1. **Boot directories.** [`StaticDirectory`] / [`MdnsDirectory`] /
-//!    [`RegistryDirectory`] populate a peer list before the DHT
-//!    routing table has converged. All three implement
-//!    [`PeerDirectory`] so callers treat them interchangeably.
+//! 1. **Boot directories.** [`StaticDirectory`] / [`MdnsDirectory`]
+//!    populate a peer list before the DHT routing table has
+//!    converged. Both implement [`PeerDirectory`] so callers treat
+//!    them interchangeably.
 //!
 //! 2. **The swarm host.** [`Libp2pNode`] runs TCP + Noise XX + yamux
 //!    + `identify` + `ping` + Kademlia behind a single command
@@ -21,14 +21,12 @@
 pub mod dht;
 pub mod directory;
 pub mod mdns;
-pub mod registry_dir;
 pub mod swarm;
 pub mod swarm_index;
 
 pub use dht::{model_key, shard_key, ModelEnvelope, ProviderRecord};
 pub use directory::{PeerDirectory, PeerRecord, StaticDirectory};
 pub use mdns::MdnsDirectory;
-pub use registry_dir::RegistryDirectory;
 pub use swarm::{
     spawn as spawn_libp2p_node, identity_to_keypair, IdentifiedPeer, Libp2pNode,
     AGENT_VERSION, PROTOCOL_VERSION,

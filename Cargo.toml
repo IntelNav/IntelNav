@@ -8,7 +8,6 @@ members = [
     "crates/app",
     "crates/cli",
     "crates/node",
-    "crates/registry",
     "crates/runtime",
     "crates/ggml",
     "crates/model-store",
@@ -80,7 +79,6 @@ intelnav-wire    = { path = "crates/wire" }
 intelnav-crypto  = { path = "crates/crypto" }
 intelnav-net     = { path = "crates/net" }
 intelnav-app     = { path = "crates/app" }
-intelnav-registry = { path = "crates/registry" }
 intelnav-runtime  = { path = "crates/runtime" }
 intelnav-model-store = { path = "crates/model-store", features = ["serve"] }
 

@@ -2,28 +2,39 @@
 
 ## Workspace shape
 
-```
-core ◄── wire ◄── crypto       (data types, codecs, primitives)
-         │           │
-         └─── net ◄──┘          (libp2p + DHT + mDNS + registry)
-              │
-       runtime ──── ggml        (layer-range inference, libllama loader)
-              │
-       model-store               (GGUF chunker, stitcher, fetch, optional serve)
-              │
-              ▼
-            app                  (TUI, drivers, contribute paths, swarm-node spawn)
-            ▲   ▲
-            │   │
-        cli │   │ node
-        (chat) (daemon)
+```mermaid
+flowchart TD
+    core[core<br/><i>types · config · errors</i>]
+    wire[wire<br/><i>CBOR codecs</i>]
+    crypto[crypto<br/><i>Ed25519 · X25519 · AES-GCM</i>]
+    ggml[ggml<br/><i>libllama loader · GPU probe</i>]
+    runtime[runtime<br/><i>layer-range inference</i>]
+    modelstore[model-store<br/><i>chunker · stitcher · fetch · multi-shard server</i>]
+    net[net<br/><i>libp2p + Kademlia DHT + mDNS</i>]
+    app[app<br/><i>TUI · drivers · contribute · daemon services</i>]
+    cli["cli<br/><b>intelnav</b> (chat)"]
+    node["node<br/><b>intelnav-node</b> (daemon)"]
+
+    core --> wire
+    core --> crypto
+    wire --> net
+    crypto --> net
+    core --> net
+    core --> runtime
+    core --> modelstore
+    ggml --> runtime
+    runtime --> app
+    modelstore --> app
+    net --> app
+    app --> cli
+    app --> node
 ```
 
 `core` is the foundation: shared types, config, errors, no heavy
 deps. `wire` and `crypto` build on it. `net` does peer discovery
-(mDNS, libp2p, registry HTTP poll) and the Kademlia shard index.
-`runtime` and `ggml` handle layer-range inference. `model-store`
-is the chunker / stitcher / fetcher.
+(mDNS, libp2p) and the Kademlia shard index. `runtime` and `ggml`
+handle layer-range inference. `model-store` is the chunker /
+stitcher / fetcher / multi-shard chunk HTTP server.
 
 `app` is the substantive layer — every module that isn't a leaf
 crate or a binary lives here. It's a library so two binaries can
@@ -59,9 +70,41 @@ The node binary:
 - Publishes one `(model_cid, layer_range) → ProviderRecord` to the
   DHT for every slice in those sidecars.
 - Re-announces every 5 minutes (Kademlia provider TTL is 30 min).
-- Hosts the chunk-server (`intelnav-chunk serve`) and the inference
-  forward listener so other peers can pull our bundles or include
-  us in a chain.
+- Hosts the chunk HTTP server and the inference forward TCP listener
+  in-process so other peers can pull our bundles or include us in a
+  chain. No separate sidecar processes.
+
+## Runtime data flow
+
+A single chat turn:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant TUI as intelnav (TUI)
+    participant LP as Local pipeline<br/>(driver, layers 0..k)
+    participant A as peer A<br/>(layers k..m)
+    participant B as peer B<br/>(layers m..N)
+
+    U->>TUI: prompt
+    TUI->>LP: tokenize + embed
+    LP->>LP: forward 0..k
+    LP->>A: ForwardHidden (hidden state)
+    A->>A: forward k..m
+    A->>B: ForwardHidden
+    B->>B: forward m..N
+    B-->>A: ForwardHidden (tail output)
+    A-->>LP: ForwardHidden
+    LP->>LP: head + sample
+    LP-->>TUI: token
+    TUI-->>U: stream
+    Note over LP,B: loop until EOS
+```
+
+The driver owns the embedding + the front slice + the head. Hidden
+states travel through the chain in CBOR-framed `ForwardHidden`
+messages. Each peer keeps its own KV cache for the session;
+`SessionInit` resets it at the start of each turn.
 
 ## DHT shard index
 

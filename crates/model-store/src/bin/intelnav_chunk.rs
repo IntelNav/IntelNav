@@ -9,7 +9,6 @@
 //! stdout, so it's easy to pipe: `MODEL_CID=$(intelnav-chunk chunk ...)`.
 
 #[cfg(feature = "serve")]
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -60,15 +59,6 @@ enum Cmd {
         #[arg(long)]
         end: Option<u32>,
     },
-    /// Serve a chunk directory over HTTP. Requires the `serve` feature.
-    #[cfg(feature = "serve")]
-    Serve {
-        /// Directory containing manifest.json + chunks/.
-        root: PathBuf,
-        /// Bind address.
-        #[arg(long, default_value = "127.0.0.1:8645")]
-        bind: SocketAddr,
-    },
 }
 
 fn main() -> ExitCode {
@@ -93,10 +83,6 @@ fn main() -> ExitCode {
             Cmd::Verify { output_dir } => run_verify(output_dir),
             Cmd::Fetch { url, cache_root, start, end } => {
                 run_fetch(&url, cache_root, start, end).await
-            }
-            #[cfg(feature = "serve")]
-            Cmd::Serve { root, bind } => {
-                intelnav_model_store::serve::serve(root, bind).await
             }
         }
     });

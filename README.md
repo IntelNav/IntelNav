@@ -8,8 +8,12 @@ answer a prompt. No single peer holds the whole model. Slices are
 addressed on a Kademlia DHT, and the only thing a contributor commits
 to is the slice they have RAM for.
 
-```
-   prompt ──► [you: layers 0..k) ──► peer A: [k..m) ──► peer B: [m..N) ──► tokens
+```mermaid
+flowchart LR
+    Prompt([prompt]) --> You["you · layers 0..k"]
+    You -->|hidden state| A["peer A · layers k..m"]
+    A -->|hidden state| B["peer B · layers m..N"]
+    B --> Tokens([tokens])
 ```
 
 **Every peer must contribute.** You either host a slice or run as a
@@ -74,6 +78,34 @@ Inside the TUI:
 
 ## Layout
 
+```mermaid
+flowchart TD
+    subgraph foundation [foundation — leaf crates, no heavy deps]
+        core[core] --> wire[wire]
+        core --> crypto[crypto]
+    end
+    subgraph runtime_layer [inference layer]
+        ggml[ggml] --> runtime[runtime]
+        modelstore[model-store]
+    end
+    subgraph network_layer [network layer]
+        net[net]
+    end
+    subgraph substantive [substantive — TUI, drivers, daemon plumbing]
+        app[app]
+    end
+    wire --> net
+    crypto --> net
+    runtime --> app
+    modelstore --> app
+    net --> app
+    core --> runtime
+    core --> modelstore
+    core --> net
+    app --> cli["cli<br/>(intelnav binary)"]
+    app --> node["node<br/>(intelnav-node binary)"]
+```
+
 ```
 intelnav/
 ├── crates/
@@ -87,13 +119,12 @@ intelnav/
 │   ├── app/              substantive code: TUI, drivers, contribute paths,
 │   │                     daemon-hosted forward + chunk + control servers
 │   ├── cli/              `intelnav` — chat client (thin binary over `app`)
-│   ├── node/             `intelnav-node` — host daemon (thin binary over `app`)
-│   └── registry/         optional bootstrap coordinator
+│   └── node/             `intelnav-node` — host daemon (thin binary over `app`)
 ├── docs/
 │   ├── architecture.md     workspace + protocol overview
 │   ├── onboarding-host.md  how to host slices
 │   └── onboarding-user.md  how to chat (still mandatory: pick a slice or relay)
-└── specs/                wire protocol + registry specs
+└── specs/                wire protocol
 ```
 
 ## Platforms
