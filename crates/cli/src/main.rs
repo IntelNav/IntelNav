@@ -92,6 +92,21 @@ async fn main() -> Result<()> {
     let _ = init_report;
 
     let is_tui = matches!(cli.command, None | Some(Command::Chat { .. }));
+
+    // Run the contribution gate BEFORE we redirect stderr to the log
+    // file (which the TUI bootstrap below does to keep tracing from
+    // painting over Ratatui). If we ran it after, the gate's "you must
+    // contribute" explainer would silently disappear into the log.
+    if is_tui {
+        match gate::check(&config) {
+            gate::GateState::Pass(_) => {}
+            gate::GateState::NeedsContribution { suggestion } => {
+                print_gate_block(suggestion);
+                return Ok(());
+            }
+        }
+    }
+
     let level = match cli.verbose {
         0 => "intelnav=info,warn",
         1 => "intelnav=debug,info",
@@ -129,16 +144,8 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Command::Chat { model: None, quorum: None, allow_wan: false }) {
         Command::Chat { model, quorum, allow_wan } => {
-            // Mandatory contribution gate: chat is unlocked only when
-            // the user is hosting at least one slice OR has explicitly
-            // opted into DHT-only relay mode.
-            match gate::check(&config) {
-                gate::GateState::Pass(_) => {}
-                gate::GateState::NeedsContribution { suggestion } => {
-                    print_gate_block(suggestion);
-                    return Ok(());
-                }
-            }
+            // Gate already checked above (must run before stderr is
+            // redirected to the TUI log file).
             tui::run(&config, config.mode, model, quorum, allow_wan).await
         }
         Command::Ask { model, prompt } => {
@@ -161,14 +168,15 @@ async fn main() -> Result<()> {
 }
 
 /// Pre-TUI explainer for users who haven't picked a slice yet.
-/// Prints to stderr (TUI hasn't started) so a stale tracing line can't
-/// race with us.
+///
+/// Writes to stdout (the user's terminal) before the TUI's stderr
+/// redirect kicks in, so the message actually reaches them.
 fn print_gate_block(suggestion: Option<intelnav_app::gate::Suggestion>) {
-    eprintln!();
-    eprintln!("\x1b[1mIntelNav requires every peer to contribute.\x1b[0m");
-    eprintln!();
-    eprintln!("You're not hosting a slice yet. Two ways forward:");
-    eprintln!();
+    println!();
+    println!("\x1b[1mIntelNav requires every peer to contribute.\x1b[0m");
+    println!();
+    println!("You're not hosting a slice yet. Two ways forward:");
+    println!();
     if let Some(s) = suggestion {
         let (start, end) = s.range;
         let fit_label = match s.fit {
@@ -176,19 +184,24 @@ fn print_gate_block(suggestion: Option<intelnav_app::gate::Suggestion>) {
             intelnav_app::catalog::Fit::Tight => "tight (close to RAM limit)",
             intelnav_app::catalog::Fit::TooBig => "too big",
         };
-        eprintln!("  1. \x1b[32mHost a slice\x1b[0m — recommended for your hardware:");
-        eprintln!("       \x1b[1m{}\x1b[0m  layers [{start}..{end})  ({fit_label})",
+        println!("  1. \x1b[32mHost a slice\x1b[0m — your hardware can comfortably run:");
+        println!("       \x1b[1m{}\x1b[0m  layers [{start}..{end})  ({fit_label})",
             s.entry.display_name);
-        eprintln!("       Run \x1b[1mintelnav contribute --slug {} --range {start}-{end}\x1b[0m",
-            s.entry.id);
+        println!();
+        println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m to launch the TUI,");
+        println!("       then \x1b[1m/models\x1b[0m, highlight the row, press \x1b[1mc\x1b[0m to contribute.");
+        println!("       Once the contribute flow finishes you can drop the env var.");
     } else {
-        eprintln!("  1. \x1b[33mHost a slice\x1b[0m — your hardware is below the catalog floor.");
-        eprintln!("       Pick \"relay only\" instead, or upgrade to ≥4GB free RAM.");
+        println!("  1. \x1b[33mHost a slice\x1b[0m — your hardware is below the catalog floor.");
+        println!("       Pick \"relay only\" instead, or upgrade to ≥4 GB free RAM.");
     }
-    eprintln!();
-    eprintln!("  2. \x1b[36mRelay only\x1b[0m — daemon participates in the DHT but");
-    eprintln!("       runs no inference. Set \x1b[1mrelay_only = true\x1b[0m in");
-    eprintln!("       ~/.config/intelnav/config.toml or run:");
-    eprintln!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
-    eprintln!();
+    println!();
+    println!("  2. \x1b[36mRelay only\x1b[0m — your daemon participates in the DHT but");
+    println!("       runs no inference. Quickest path to a chat session:");
+    println!();
+    println!("       \x1b[1mINTELNAV_RELAY_ONLY=1 intelnav\x1b[0m");
+    println!();
+    println!("       To make it permanent: set \x1b[1mrelay_only = true\x1b[0m in");
+    println!("       ~/.config/intelnav/config.toml.");
+    println!();
 }

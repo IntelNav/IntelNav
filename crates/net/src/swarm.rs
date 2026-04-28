@@ -334,11 +334,17 @@ async fn drive_swarm(mut swarm: Swarm<IntelNavBehaviour>, mut rx: mpsc::Receiver
                 SwarmEvent::Behaviour(IntelNavBehaviourEvent::Ping(ev)) => {
                     debug!(?ev, "ping");
                 }
+                // Connection errors are noisy on a healthy swarm: every
+                // peer learned via mDNS/identify gets dialed back, and
+                // any of them being NAT'd or shut down produces an
+                // error here. Demote to debug — real failures surface
+                // through the explicit `dial()` Result and the
+                // bootstrap loop's own logging.
                 SwarmEvent::IncomingConnectionError { error, .. } => {
-                    warn!(?error, "incoming connection error");
+                    debug!(?error, "incoming connection error");
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                    warn!(?peer_id, ?error, "outgoing connection error");
+                    debug!(?peer_id, ?error, "outgoing connection error");
                 }
                 _ => {}
             }
