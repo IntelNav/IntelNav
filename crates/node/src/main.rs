@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
         .init();
 
     intelnav_app::firstrun::ensure_initialized()?;
+    intelnav_app::gpu_compat::ensure_runtime_overrides();
     let config = Config::load()?;
     intelnav_app::swarm_node::serve_forever(&config, config.models_dir.clone()).await
 }

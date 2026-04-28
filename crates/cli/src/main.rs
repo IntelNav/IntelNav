@@ -9,7 +9,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use intelnav_app::{cmd, firstrun, gate, tui};
+use intelnav_app::{cmd, firstrun, gate, gpu_compat, tui};
 use intelnav_core::{Config, RunMode};
 
 #[derive(Parser)]
@@ -84,6 +84,10 @@ async fn main() -> Result<()> {
     // Auto-init on first run: writes config.toml + peer.key + models_dir
     // if any are missing. Idempotent on subsequent runs.
     let init_report = firstrun::ensure_initialized()?;
+    // Probe the GPU and set HSA_OVERRIDE_GFX_VERSION if our libllama
+    // tarballs would otherwise fail on this card. Must run BEFORE any
+    // libllama operation — we're still single-threaded here.
+    gpu_compat::ensure_runtime_overrides();
 
     let mut config = Config::load()?;
     if let Some(m) = cli.mode {

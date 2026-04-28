@@ -76,6 +76,9 @@ fn forwarded_env() -> Vec<(String, String)> {
         "INTELNAV_MODELS_DIR",
         "INTELNAV_DEVICE",
         "INTELNAV_BOOTSTRAP",
+        // gpu_compat sets this if needed; carry it into systemd so the
+        // daemon's own libllama load also runs on adjacent-arch cards.
+        "HSA_OVERRIDE_GFX_VERSION",
     ];
     keys.iter()
         .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))

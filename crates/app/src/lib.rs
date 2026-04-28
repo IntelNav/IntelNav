@@ -18,6 +18,7 @@ pub mod delta;
 pub mod download;
 pub mod firstrun;
 pub mod forward_server;
+pub mod gpu_compat;
 pub mod gate;
 pub mod local;
 pub mod probe_latency;
