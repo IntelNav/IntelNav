@@ -85,9 +85,9 @@ Ed25519 identities, signed advertisements), not "trust us, we
 encrypt at rest."
 
 Performance is the trade. Today, a four-hop chain is slower than
-a hosted call to GPT or Claude. That's the same place Tor was in
-2003 and BitTorrent in 2002, and it's a population problem, not
-a protocol problem. The website has the
+a hosted call to a vendor model. That's the same place Tor was in
+2003 and BitTorrent in 2002. It's a population problem, not a
+protocol problem. The website has the
 [full threat model](https://intelnav.net/sovereignty/) including
 what the design doesn't defend against.
 

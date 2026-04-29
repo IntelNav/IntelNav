@@ -1,4 +1,6 @@
-//! Gradient-shimmer text coloring — the Claude-Code-style orange pulse.
+//! Gradient-shimmer text coloring. Used as a "thinking" indicator
+//! on streaming output: a warm-orange pulse runs along the string
+//! while inference is in flight.
 //!
 //! Given a phase in `[0.0, 1.0)` and a character position, sample a 3-stop
 //! gradient (dark orange → bright orange → dark orange) so the highlight
@@ -6,7 +8,7 @@
 
 use ratatui::style::Color;
 
-/// Claude-brand orange stops: `#b4542e` → `#d97757` → `#ffb089`.
+/// Warm orange gradient stops: `#b4542e` → `#d97757` → `#ffb089`.
 const STOP_A: (u8, u8, u8) = (0xb4, 0x54, 0x2e);
 const STOP_B: (u8, u8, u8) = (0xd9, 0x77, 0x57);
 const STOP_C: (u8, u8, u8) = (0xff, 0xb0, 0x89);

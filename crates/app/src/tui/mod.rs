@@ -1,4 +1,4 @@
-//! Interactive chat REPL — the Claude-Code lookalike.
+//! Interactive chat REPL.
 //!
 //! Layout:
 //!
