@@ -10,11 +10,47 @@ contributors only commit RAM for the slice they have headroom to host.
 
 ```mermaid
 flowchart LR
-    Prompt([prompt]) --> You["you · layers 0..k"]
-    You -->|hidden state| A["peer A · layers k..m"]
-    A -->|hidden state| B["peer B · layers m..N"]
-    B --> Tokens([tokens])
+    P([prompt])
+
+    subgraph chat ["chat client — intelnav"]
+        direction TB
+        Tok["tokenize<br/>+ embed"]
+        Front["forward<br/>layers 0..6"]
+        Render["render<br/>tokens"]
+        Tok --> Front
+    end
+
+    subgraph A ["peer A — intelnav-node"]
+        FA["forward<br/>layers 6..12"]
+    end
+
+    subgraph B ["peer B — intelnav-node"]
+        FB["forward<br/>layers 12..18"]
+    end
+
+    subgraph T ["tail peer — intelnav-node"]
+        direction TB
+        FT["forward<br/>layers 18..24"]
+        Head["head<br/>sample token"]
+        FT --> Head
+    end
+
+    P     ==> Tok
+    Front -- "hidden state · Noise XX" --> FA
+    FA    -- "hidden state · Noise XX" --> FB
+    FB    -- "hidden state · Noise XX" --> FT
+    Head  == "token" ==> Render
 ```
+
+The split above is the actual `local-swarm.sh` topology: a 24-block
+Qwen 2.5 · 0.5B model carved into four ranges. The chat client owns
+the embedding step and the front slice; each peer owns one contiguous
+range; the tail peer owns the lm-head and samples a token. **Mid-chain
+peers see only hidden-state tensors, not text** — the embedding has
+been folded through *k* non-linear blocks before it ever leaves the
+client. Hidden states travel as length-prefixed CBOR `ForwardHidden`
+messages over Noise XX (X25519 + AES-256-GCM); tokens stream back
+upstream and the next-token forward starts at the chat client again.
 
 **Every peer must contribute.** You either host a slice or run as a
 DHT relay. There is no leech mode — without contribution, the swarm
