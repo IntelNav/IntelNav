@@ -1,10 +1,22 @@
-# IntelNav
+<p align="center">
+  <img src="docs/assets/banner.png" alt="IntelNav — decentralized, pipeline-parallel LLM inference" width="100%">
+</p>
 
-**Decentralized, pipeline-parallel LLM inference.**
+<h1 align="center">IntelNav</h1>
+
+<p align="center">
+  <strong>The model is the network.</strong><br>
+  <a href="https://intelnav.net">intelnav.net</a> ·
+  <a href="https://intelnav.net/demo/">live demo</a> ·
+  <a href="https://intelnav.net/install/">install</a> ·
+  <a href="docs/architecture.md">architecture</a>
+</p>
+
+---
 
 IntelNav splits a model into layer-range slices, scatters them across
 volunteer hardware, and streams hidden states through the chain to
-answer a prompt. No single peer holds the whole model. Slices are
+answer a prompt. **No single peer holds the whole model.** Slices are
 addressed on a Kademlia DHT, and the only thing a contributor commits
 to is the slice they have RAM for.
 
@@ -19,6 +31,14 @@ flowchart LR
 **Every peer must contribute.** You either host a slice or run as a
 DHT relay. There is no leech mode — without contribution, the swarm
 collapses into the people running it.
+
+## Try it
+
+```bash
+curl -fsSL https://intelnav.net/install.sh | sh
+```
+
+Or build from source — see [Install](https://intelnav.net/install/).
 
 ## Two binaries
 
